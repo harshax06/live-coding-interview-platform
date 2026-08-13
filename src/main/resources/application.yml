@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: interview-platform
+
+  datasource:
+    url: jdbc:postgresql://localhost:5434/interview_platform
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:postgres}
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
