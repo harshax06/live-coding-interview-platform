@@ -19,6 +19,7 @@ target/
 *.iml
 *.ipr
 .env
+yjs-server/node_modules/
 
 ### NetBeans ###
 /nbproject/private/
@@ -33,3 +34,5 @@ build/
 ### VS Code ###
 .vscode/
 
+
+yjs-server/node_modules/

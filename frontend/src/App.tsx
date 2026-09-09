@@ -1,115 +1,70 @@
-import { useState } from 'react';
-import Editor from '@monaco-editor/react';
+import { useEffect, useRef } from "react";
+import Editor, { type OnMount } from "@monaco-editor/react";
+import * as Y from "yjs";
+import { WebsocketProvider } from "y-websocket";
+import { MonacoBinding } from "y-monaco";
 
-const LANGUAGES = [
-  { label: 'JavaScript', value: 'javascript' },
-  { label: 'Python', value: 'python' },
-  { label: 'Java', value: 'java' },
-];
+function App({ roomJoinCode = "default-room" }: { roomJoinCode?: string }) {
+    const bindingRef = useRef<{
+        binding: MonacoBinding;
+        provider: WebsocketProvider;
+        ydoc: Y.Doc;
+    } | null>(null);
 
-function App() {
-  const [language, setLanguage] = useState('javascript');
+    const handleEditorMount: OnMount = (editor) => {
+        const model = editor.getModel();
 
-  return (
-      <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            height: '100vh',
-          }}
-      >
-        {/* Top Bar */}
-        <header
-            style={{
-              height: '50px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '0 16px',
-              background: '#1e1e1e',
-              color: '#fff',
-            }}
-        >
-          <div>
-            <strong>Interview Room</strong>
-            <span style={{ marginLeft: '12px' }}>
-            Room: ABC123
-          </span>
-          </div>
+        if (!model) {
+            console.error("Monaco editor model is not available.");
+            return;
+        }
 
-          <select
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-          >
-            {LANGUAGES.map((lang) => (
-                <option key={lang.value} value={lang.value}>
-                  {lang.label}
-                </option>
-            ))}
-          </select>
-        </header>
+        const ydoc = new Y.Doc();
 
-        {/* Main Area */}
-        <main
-            style={{
-              display: 'flex',
-              flex: 1,
-              minHeight: 0,
-            }}
-        >
-          {/* Editor */}
-          <section
-              style={{
-                flex: 1,
-                minWidth: 0,
-              }}
-          >
-            <Editor
-                height="100%"
-                language={language}
-                defaultValue="// Start coding here"
-                theme="vs-dark"
-                options={{
-                  minimap: {
-                    enabled: true,
-                  },
-                }}
-            />
-          </section>
+        const provider = new WebsocketProvider(
+            "ws://localhost:1234",
+            roomJoinCode,
+            ydoc
+        );
 
-          {/* Placeholder Panels */}
-          <aside
-              style={{
-                width: '300px',
-                background: '#252526',
-                color: '#fff',
-                padding: '16px',
-              }}
-          >
-            <div
-                style={{
-                  height: '50%',
-                  border: '1px solid #555',
-                  marginBottom: '16px',
-                  padding: '12px',
-                }}
-            >
-              Video Panel
-            </div>
+        provider.on("status", (event) => {
+            console.log("Yjs WebSocket status:", event.status);
+        });
 
-            <div
-                style={{
-                  height: '50%',
-                  border: '1px solid #555',
-                  padding: '12px',
-                }}
-            >
-              Run Output
-            </div>
-          </aside>
-        </main>
-      </div>
-  );
+        const ytext = ydoc.getText("monaco");
+
+        const binding = new MonacoBinding(
+            ytext,
+            model,
+            new Set([editor]),
+            provider.awareness
+        );
+
+        bindingRef.current = {
+            binding,
+            provider,
+            ydoc,
+        };
+    };
+
+    useEffect(() => {
+        return () => {
+            bindingRef.current?.binding.destroy();
+            bindingRef.current?.provider.destroy();
+            bindingRef.current?.ydoc.destroy();
+
+            bindingRef.current = null;
+        };
+    }, []);
+
+    return (
+        <Editor
+            height="100vh"
+            defaultLanguage="javascript"
+            theme="vs-dark"
+            onMount={handleEditorMount}
+        />
+    );
 }
 
 export default App;
