@@ -7,6 +7,7 @@ import com.harsha.interview_platform.entity.Role;
 import com.harsha.interview_platform.entity.User;
 import com.harsha.interview_platform.repository.UserRepository;
 import com.harsha.interview_platform.security.JwtUtil;
+import com.harsha.interview_platform.security.TokenClaims;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -22,8 +23,6 @@ import java.util.Optional;
 
 @RestController
 @RequestMapping("/auth")
-@Getter
-@Setter
 @AllArgsConstructor
 public class AuthController {
 
@@ -45,7 +44,9 @@ public class AuthController {
 
         userRepository.save(user);
 
-        String token = jwtUtil.generateToken(user);
+        TokenClaims tokenClaims = new TokenClaims(user.getId(),user.getEmail(),user.getRole().name()) ;
+
+        String token = jwtUtil.generateToken(tokenClaims);
         return ResponseEntity.ok(new AuthResponse(token));
     }
 
@@ -57,7 +58,11 @@ public class AuthController {
             return ResponseEntity.status(401).body("Invalid email or password");
         }
 
-        String token = jwtUtil.generateToken(userOpt.get());
+        User user = userOpt.get() ;
+
+        TokenClaims tokenClaims = new TokenClaims(user.getId(),user.getEmail(),user.getRole().name()) ;
+
+        String token = jwtUtil.generateToken(tokenClaims);
         return ResponseEntity.ok(new AuthResponse(token));
     }
 

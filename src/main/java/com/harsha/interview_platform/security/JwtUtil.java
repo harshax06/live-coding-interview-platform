@@ -1,6 +1,5 @@
 package com.harsha.interview_platform.security;
 
-import com.harsha.interview_platform.entity.User;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -22,11 +21,11 @@ public class JwtUtil {
         return Keys.hmacShaKeyFor(secretkeyString.getBytes());
     }
 
-    public String generateToken(User user) {
+    public String generateToken(TokenClaims tokenClaims) {
         return Jwts.builder()
-                .subject(user.getEmail())
-                .claim("userId",user.getId())
-                .claim("role",user.getRole().name())
+                .subject(tokenClaims.email())
+                .claim("userId",tokenClaims.userId())
+                .claim("role",tokenClaims.role())
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + expirationMs))
                 .signWith(getSigningKey())
