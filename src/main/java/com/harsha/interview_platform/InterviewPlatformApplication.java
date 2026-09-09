@@ -9,7 +9,7 @@ import java.util.TimeZone;
 public class InterviewPlatformApplication {
 
 	public static void main(String[] args) {
-		TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+		TimeZone.setDefault(TimeZone.getTimeZone("Asia/Kolkata"));
 		SpringApplication.run(InterviewPlatformApplication.class, args);
 	}
 

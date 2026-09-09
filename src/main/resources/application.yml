@@ -3,7 +3,7 @@ spring:
     name: interview-platform
 
   datasource:
-    url: jdbc:postgresql://localhost:5434/interview_platform
+    url: jdbc:postgresql://localhost:5434/interview_platform?options=-c%20TimeZone=Asia/Kolkata
     username: ${POSTGRES_USER:postgres}
     password: ${POSTGRES_PASSWORD:postgres}
 
@@ -16,5 +16,5 @@ spring:
         format_sql: true
 
 jwt:
-  secret: ${JWT_SECRET}
+  secret: ${JWT_SECRET:This is secret key}
   expiration-ms: 86400000

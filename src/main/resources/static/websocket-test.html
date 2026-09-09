@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7/bundles/stomp.umd.min.js"></script>
+</head>
+
+<body>
+
+<h2>WebSocket Echo Test</h2>
+
+<input id="message" value="Hello WebSocket!">
+<button onclick="sendMessage()">Send</button>
+
+<h3>Messages:</h3>
+<div id="output"></div>
+
+<script>
+
+    const socket = new SockJS("http://localhost:8080/ws");
+
+    const client = new StompJs.Client({
+        webSocketFactory: () => socket,
+
+        debug: function (str) {
+            console.log(str);
+        },
+
+        onConnect: function (frame) {
+
+            console.log("CONNECTED!");
+
+            document.getElementById("output").innerHTML +=
+                "<p>✅ Connected!</p>";
+
+            client.subscribe("/topic/echo", function (message) {
+
+                console.log("Received:", message.body);
+
+                document.getElementById("output").innerHTML +=
+                    "<p>📩 " + message.body + "</p>";
+            });
+        },
+
+        onStompError: function (frame) {
+
+            console.error("STOMP ERROR:", frame);
+
+            document.getElementById("output").innerHTML +=
+                "<p>❌ STOMP Error</p>";
+        },
+
+        onWebSocketError: function (error) {
+
+            console.error("WebSocket ERROR:", error);
+
+            document.getElementById("output").innerHTML +=
+                "<p>❌ WebSocket Error</p>";
+        }
+    });
+
+    client.activate();
+
+    function sendMessage() {
+
+        const message =
+            document.getElementById("message").value;
+
+        console.log("Sending:", message);
+
+        client.publish({
+            destination: "/app/echo",
+            body: message
+        });
+    }
+
+</script>
+
+</body>
+</html>
