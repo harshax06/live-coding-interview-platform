@@ -6,9 +6,12 @@ import org.springframework.stereotype.Service;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -19,164 +22,127 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class CodeExecutionService {
 
-    private static final int TIMEOUT_SECONDS = 10;
+    private static final int MAX_OUTPUT_CHARS = 64 * 1024;
 
-    private final ExecutorService streamReaderPool =
-            Executors.newFixedThreadPool(2);
+    // Cached pool: each run uses 2 reader threads, a fixed pool of 2 would serialize concurrent runs
+    private final ExecutorService streamReaderPool = Executors.newCachedThreadPool();
 
-    public ExecutionResult execute(String code) {
+    public ExecutionResult execute(String languageId, String code) {
 
-        Path tempFile = null;
+        LanguageConfig lang;
+        try {
+            lang = Languages.get(languageId == null || languageId.isBlank() ? "python" : languageId);
+        } catch (IllegalArgumentException e) {
+            return new ExecutionResult("", e.getMessage(), -1, false);
+        }
+
+        Path dir = null;
         Process process = null;
+        String containerName = "sbx-" + UUID.randomUUID();
 
         try {
+            dir = Files.createTempDirectory("exec-");
+            // Container user (1000) must be able to read the mount regardless of host uid
+            makeWorldReadable(dir, "rwxr-xr-x");
+            Path src = dir.resolve(lang.fileName());
+            Files.writeString(src, code, StandardCharsets.UTF_8);
+            makeWorldReadable(src, "rw-r--r--");
 
-            tempFile = Files.createTempFile(
-                    "exec-" + UUID.randomUUID(),
-                    ".py"
-            );
+            process = new ProcessBuilder(buildDockerCommand(lang, containerName, dir)).start();
+            Process started = process;
+            started.getOutputStream().close();
 
-            Files.writeString(tempFile, code);
+            Future<String> stdoutFuture = streamReaderPool.submit(() -> readStream(started.getInputStream()));
+            Future<String> stderrFuture = streamReaderPool.submit(() -> readStream(started.getErrorStream()));
 
-            List<String> command = buildDockerCommand(tempFile);
-
-            ProcessBuilder processBuilder =
-                    new ProcessBuilder(command);
-
-            process = processBuilder.start();
-
-            Process startedProcess = process;
-
-            Future<String> stdoutFuture =
-                    streamReaderPool.submit(
-                            () -> readStream(
-                                    startedProcess.getInputStream()
-                            )
-                    );
-
-            Future<String> stderrFuture =
-                    streamReaderPool.submit(
-                            () -> readStream(
-                                    startedProcess.getErrorStream()
-                            )
-                    );
-
-            boolean finished =
-                    startedProcess.waitFor(
-                            TIMEOUT_SECONDS,
-                            TimeUnit.SECONDS
-                    );
+            boolean finished = started.waitFor(lang.timeoutSeconds(), TimeUnit.SECONDS);
 
             if (!finished) {
-
-                startedProcess.destroyForcibly();
-
+                // Killing the docker CLI does not stop the container; kill it by name
+                killContainer(containerName);
+                started.destroyForcibly();
                 return new ExecutionResult(
                         "",
-                        "Execution timed out after "
-                                + TIMEOUT_SECONDS + "s",
+                        "Execution timed out after " + lang.timeoutSeconds() + "s",
                         -1,
-                        true
-                );
+                        true);
             }
 
-            String stdout =
-                    stdoutFuture.get(2, TimeUnit.SECONDS);
-
-            String stderr =
-                    stderrFuture.get(2, TimeUnit.SECONDS);
-
-            return new ExecutionResult(
-                    stdout,
-                    stderr,
-                    startedProcess.exitValue(),
-                    false
-            );
+            String stdout = stdoutFuture.get(2, TimeUnit.SECONDS);
+            String stderr = stderrFuture.get(2, TimeUnit.SECONDS);
+            return new ExecutionResult(stdout, stderr, started.exitValue(), false);
 
         } catch (Exception e) {
-
-            return new ExecutionResult(
-                    "",
-                    "Execution error: " + e.getMessage(),
-                    -1,
-                    false
-            );
+            e.printStackTrace(); // some exceptions (e.g. TimeoutException) have a null message
+            return new ExecutionResult("",
+                    "Execution error: " + e.getClass().getSimpleName() + ": " + e.getMessage(),
+                    -1, false);
 
         } finally {
-
-            if (process != null) {
-                process.destroyForcibly();
-            }
-
-            if (tempFile != null) {
-
-                try {
-                    Files.deleteIfExists(tempFile);
-                } catch (Exception ignored) {
-                }
-            }
+            if (process != null) process.destroyForcibly();
+            deleteRecursively(dir);
         }
     }
 
-    private List<String> buildDockerCommand(Path tempFile) {
-
-        List<String> command = new ArrayList<>();
-
-        command.add("docker");
-        command.add("run");
-
-        command.add("--rm");
-
-        command.add("--network");
-        command.add("none");
-
-        command.add("--memory=128m");
-
-        command.add("--cpus=0.5");
-
-        command.add("--pids-limit=50");
-
-        command.add("--read-only");
-
-        command.add("--user");
-        command.add("1000:1000");
-
-        command.add("-v");
-        command.add(
-                tempFile.toAbsolutePath()
-                        + ":/sandbox/script.py:ro"
-        );
-
-        command.add("--workdir");
-        command.add("/sandbox");
-
-        command.add("python:3.11-slim");
-
-        command.add("python");
-        command.add("script.py");
-
-        return command;
+    private List<String> buildDockerCommand(LanguageConfig lang, String name, Path hostDir) {
+        List<String> c = new ArrayList<>();
+        c.add("docker"); c.add("run"); c.add("--rm");
+        c.add("--name"); c.add(name);
+        c.add("--network"); c.add("none");
+        c.add("--read-only");
+        // Narrow loosening: only /tmp, writable + exec, small, for compiled output
+        c.add("--tmpfs"); c.add("/tmp:rw,exec,size=64m");
+        c.add("--memory=" + lang.memoryMb() + "m");
+        c.add("--memory-swap=" + lang.memoryMb() + "m");
+        c.add("--cpus=1");
+        c.add("--pids-limit=" + lang.pidsLimit());
+        c.add("--cap-drop=ALL");
+        c.add("--security-opt"); c.add("no-new-privileges");
+        c.add("--user"); c.add("1000:1000");
+        c.add("-v"); c.add(hostDir.toAbsolutePath() + ":/sandbox:ro");
+        c.add("--workdir"); c.add("/tmp");
+        c.add(lang.image());
+        c.addAll(lang.containerCommand());
+        return c;
     }
 
-    private String readStream(InputStream inputStream)
-            throws Exception {
+    /** POSIX permissions only exist on Linux/macOS; on Windows Docker Desktop handles bind-mount access itself. */
+    private void makeWorldReadable(Path path, String perms) {
+        try {
+            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(perms));
+        } catch (UnsupportedOperationException | java.io.IOException ignored) {
+        }
+    }
 
+    private void killContainer(String name) {
+        try {
+            new ProcessBuilder("docker", "kill", name).start().waitFor(5, TimeUnit.SECONDS);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Keeps at most MAX_OUTPUT_CHARS but keeps draining so the process never blocks on a full pipe. */
+    private String readStream(InputStream inputStream) throws Exception {
         StringBuilder output = new StringBuilder();
-
-        try (
-                BufferedReader reader =
-                        new BufferedReader(
-                                new InputStreamReader(inputStream)
-                        )
-        ) {
-
-            String line;
-
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\n");
+        boolean truncated = false;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+            char[] buf = new char[4096];
+            int n;
+            while ((n = reader.read(buf)) != -1) {
+                int room = MAX_OUTPUT_CHARS - output.length();
+                if (room > 0) output.append(buf, 0, Math.min(n, room));
+                if (n > room) truncated = true;
             }
         }
-
+        if (truncated) output.append("\n[output truncated]");
         return output.toString();
+    }
+
+    private void deleteRecursively(Path dir) {
+        if (dir == null) return;
+        try (var walk = Files.walk(dir)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        } catch (Exception ignored) {
+        }
     }
 }

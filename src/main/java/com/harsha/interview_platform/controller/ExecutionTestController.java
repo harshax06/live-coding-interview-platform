@@ -11,16 +11,12 @@ public class ExecutionTestController {
 
     private final CodeExecutionService executionService;
 
-    public ExecutionTestController(
-            CodeExecutionService executionService) {
-
+    public ExecutionTestController(CodeExecutionService executionService) {
         this.executionService = executionService;
     }
 
     @PostMapping("/execute")
-    public ExecutionResult execute(
-            @RequestBody ExecutionRequest request) {
-
-        return executionService.execute(request.getCode());
+    public ExecutionResult execute(@RequestBody ExecutionRequest request) {
+        return executionService.execute(request.getLanguage(), request.getCode());
     }
 }
