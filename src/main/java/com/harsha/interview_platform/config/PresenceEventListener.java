@@ -1,29 +1,27 @@
 package com.harsha.interview_platform.config;
 
-import com.harsha.interview_platform.model.PresenceInfo;
 import com.harsha.interview_platform.service.PresenceService;
-import com.harsha.interview_platform.service.PresenceSessionRegistry;
 import org.springframework.context.event.EventListener;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.stereotype.Component;
 import org.springframework.web.socket.messaging.SessionDisconnectEvent;
+import org.springframework.stereotype.Component;
 
 @Component
 public class PresenceEventListener {
 
     private final PresenceSessionRegistry sessionRegistry;
     private final PresenceService presenceService;
-    private final SimpMessagingTemplate messagingTemplate;
+    private final RedisTemplate<String, String> redisTemplate;
 
     public PresenceEventListener(
             PresenceSessionRegistry sessionRegistry,
             PresenceService presenceService,
-            SimpMessagingTemplate messagingTemplate) {
+            RedisTemplate<String, String> redisTemplate) {
 
         this.sessionRegistry = sessionRegistry;
         this.presenceService = presenceService;
-        this.messagingTemplate = messagingTemplate;
+        this.redisTemplate = redisTemplate;
     }
 
     @EventListener
@@ -42,11 +40,9 @@ public class PresenceEventListener {
                             info.userId()
                     );
 
-                    messagingTemplate.convertAndSend(
-                            "/topic/presence/" + info.roomCode(),
-                            presenceService.getUsersInRoom(
-                                    info.roomCode()
-                            )
+                    redisTemplate.convertAndSend(
+                            "presence-events",
+                            info.roomCode()
                     );
                 });
     }

@@ -1,12 +1,13 @@
 package com.harsha.interview_platform.controller;
 
 import com.harsha.interview_platform.dto.request.PresenceJoinRequest;
-import com.harsha.interview_platform.model.PresenceInfo;
 import com.harsha.interview_platform.service.PresenceService;
-import com.harsha.interview_platform.service.PresenceSessionRegistry;
+import com.harsha.interview_platform.config.PresenceSessionRegistry;
+import com.harsha.interview_platform.config.PresenceInfo;
+
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.MessageMapping;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Controller;
 
 @Controller
@@ -14,16 +15,16 @@ public class PresenceController {
 
     private final PresenceService presenceService;
     private final PresenceSessionRegistry sessionRegistry;
-    private final SimpMessagingTemplate messagingTemplate;
+    private final RedisTemplate<String, String> redisTemplate;
 
     public PresenceController(
             PresenceService presenceService,
             PresenceSessionRegistry sessionRegistry,
-            SimpMessagingTemplate messagingTemplate) {
+            RedisTemplate<String, String> redisTemplate) {
 
         this.presenceService = presenceService;
         this.sessionRegistry = sessionRegistry;
-        this.messagingTemplate = messagingTemplate;
+        this.redisTemplate = redisTemplate;
     }
 
     @MessageMapping("/presence/join")
@@ -44,9 +45,9 @@ public class PresenceController {
                 )
         );
 
-        messagingTemplate.convertAndSend(
-                "/topic/presence/" + request.getRoomCode(),
-                presenceService.getUsersInRoom(request.getRoomCode())
+        redisTemplate.convertAndSend(
+                "presence-events",
+                request.getRoomCode()
         );
     }
 }

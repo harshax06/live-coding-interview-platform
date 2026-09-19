@@ -1,6 +1,5 @@
-package com.harsha.interview_platform.service;
+package com.harsha.interview_platform.config;
 
-import com.harsha.interview_platform.model.PresenceInfo;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
