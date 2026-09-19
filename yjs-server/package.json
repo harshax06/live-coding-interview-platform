@@ -11,6 +11,6 @@
   "description": "",
   "dependencies": {
     "@y/websocket-server": "^0.1.1",
-    "y-websocket": "^3.1.0"
+    "y-websocket": "^1.5.4"
   }
 }

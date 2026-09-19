@@ -35,6 +35,7 @@ public class SecurityConfig {
                                 "/websocket-test.html",
                                 "/ws/**"
                         ).permitAll()
+                        .requestMatchers("/test/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
