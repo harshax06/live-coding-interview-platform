@@ -6,6 +6,7 @@ import com.harsha.interview_platform.repository.SessionEventRecordRepository;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -80,6 +81,12 @@ public class ReplayService {
         if (s != null) s.seek(positionMs);
     }
 
+    public void setSpeed(String replayId, Double speed) {
+        if (speed == null) return;
+        ReplaySession s = sessions.get(replayId);
+        if (s != null) s.changeSpeed(Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed)));
+    }
+
     public void stop(String replayId) {
         close(replayId, true);
     }
@@ -110,7 +117,9 @@ public class ReplayService {
         private final int total;
         private final long[] playOffsetMs;
         private final long durationMs;
-        private final double speed;
+        private final long realDurationMs;                  // length of the original session
+        private final List<ReplayMessage.Gap> gaps;         // idle stretches that were shortened
+        private double speed;              // changeable while playing (see changeSpeed)
 
         private boolean playing = false;
         private boolean closed = false;
@@ -128,17 +137,25 @@ public class ReplayService {
             this.speed = speed;
 
             this.playOffsetMs = new long[total];
+            List<ReplayMessage.Gap> shortened = new ArrayList<>();
             long offset = 0;
             for (int i = 1; i < total; i++) {
                 long gap = Math.max(0, events.get(i).getEventTimestamp() - events.get(i - 1).getEventTimestamp());
+                if (gap > maxGapMs) {
+                    // remember where on the replay timeline time was cut, and how much
+                    shortened.add(new ReplayMessage.Gap(offset, gap - maxGapMs));
+                }
                 offset += Math.min(gap, maxGapMs);
                 playOffsetMs[i] = offset;
             }
             this.durationMs = playOffsetMs[total - 1];
+            this.gaps = List.copyOf(shortened);
+            this.realDurationMs = Math.max(0,
+                    events.get(total - 1).getEventTimestamp() - events.get(0).getEventTimestamp());
         }
 
         synchronized void begin() {
-            send(replayId, ReplayMessage.control("STARTED", replayId, total, durationMs, 0));
+            send(replayId, ReplayMessage.started(replayId, total, durationMs, realDurationMs, gaps));
             play();
         }
 
@@ -178,11 +195,25 @@ public class ReplayService {
         synchronized void pause() {
             if (closed || !playing) return;
             touch();
-            long elapsedMs = (long) ((System.nanoTime() - baseNanos) / 1_000_000.0 * speed);
-            // never report a position beyond the next unplayed event
-            positionMs = Math.max(positionMs, Math.min(elapsedMs, playOffsetMs[nextIndex]));
+            positionMs = currentPosition();
             halt();
             send(replayId, ReplayMessage.control("PAUSED", replayId, total, durationMs, positionMs));
+        }
+
+        /**
+         * Change speed without losing our place: freeze the current timeline position,
+         * switch speed, and (if we were playing) continue from that same position.
+         */
+        synchronized void changeSpeed(double newSpeed) {
+            if (closed) return;
+            touch();
+            boolean wasPlaying = playing;
+            if (wasPlaying) {
+                positionMs = currentPosition();
+                halt();
+            }
+            this.speed = newSpeed;
+            if (wasPlaying) play();
         }
 
         synchronized void resume() {
@@ -224,6 +255,12 @@ public class ReplayService {
 
         synchronized boolean isIdleSince(long thresholdMs) {
             return !playing && lastTouchedMs < thresholdMs;
+        }
+
+        /** Timeline position right now while playing: elapsed wall time * speed, never past the next event. */
+        private long currentPosition() {
+            long elapsedMs = (long) ((System.nanoTime() - baseNanos) / 1_000_000.0 * speed);
+            return Math.max(positionMs, Math.min(elapsedMs, playOffsetMs[nextIndex]));
         }
 
         private void halt() {

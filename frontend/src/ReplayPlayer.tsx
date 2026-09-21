@@ -12,6 +12,9 @@ type ReplayMessage = {
     playOffsetMs: number;
     durationMs: number;
     positionMs: number;
+    timestamp: number;
+    realDurationMs?: number;
+    gaps?: { positionMs: number; skippedMs: number }[];
     payload: string | null;
     instant: boolean;
     message: string | null;
@@ -63,6 +66,10 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
     const [error, setError] = useState<string | null>(null);
     const [runOutput, setRunOutput] = useState<RunOutput | null>(null);
     const [runningBy, setRunningBy] = useState<string | null>(null);
+    const [skipIdle, setSkipIdle] = useState(true);
+    const [realDurationMs, setRealDurationMs] = useState(0);
+    const [originalMs, setOriginalMs] = useState(0);
+    const [gaps, setGaps] = useState<{ positionMs: number; skippedMs: number }[]>([]);
 
     const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
     const monacoRef = useRef<Parameters<OnMount>[1] | null>(null);
@@ -72,6 +79,7 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
     const rafRef = useRef(0);
     const startedRef = useRef(false);
     const scrubbingRef = useRef(false);
+    const firstTimestampRef = useRef<number | null>(null);   // real time of event #0, to show original session time
     // Timeline position is extrapolated between server events: position = anchor.pos + elapsed * speed
     const anchorRef = useRef({ pos: 0, wall: Date.now() });
 
@@ -142,12 +150,18 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
                 setRunOutput(null);
                 setRunningBy(null);
                 setPositionMs(0);
+                setRealDurationMs(m.realDurationMs ?? 0);
+                setGaps(m.gaps ?? []);
+                setOriginalMs(0);
+                firstTimestampRef.current = null;
                 setStatus("playing");
                 anchorRef.current = { pos: 0, wall: Date.now() };
                 break;
             case "EVENT":
                 applyEvent(m);
                 setApplied(m.index + 1);
+                if (m.index === 0) firstTimestampRef.current = m.timestamp;
+                if (firstTimestampRef.current !== null) setOriginalMs(m.timestamp - firstTimestampRef.current);
                 if (!m.instant) {
                     anchorRef.current = { pos: m.playOffsetMs, wall: Date.now() };
                     if (!scrubbingRef.current) setPositionMs(m.playOffsetMs);
@@ -222,7 +236,7 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
         if (!connected) return;
         if (status === "idle" || status === "error") {
             startedRef.current = true;
-            send("start", { roomCode, speed, maxGapMs: 3000 });
+            send("start", { roomCode, speed, maxGapMs: skipIdle ? 3000 : 0 });
         } else if (status === "playing") {
             send("pause");
         } else {
@@ -237,6 +251,37 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
         if (!scrubbingRef.current) return;
         scrubbingRef.current = false;
         send("seek", { positionMs: Number(e.currentTarget.value) });
+    };
+
+    const onSpeedChange = (newSpeed: number) => {
+        if (status === "playing") {
+            // re-anchor at the current position so the scrub bar doesn't jump when the speed changes
+            const a = anchorRef.current;
+            const now = Date.now();
+            anchorRef.current = { pos: Math.min(a.pos + (now - a.wall) * speed, durationMs), wall: now };
+        }
+        setSpeed(newSpeed);
+        if (status !== "idle" && status !== "error") send("speed", { speed: newSpeed });
+    };
+
+    // Back to the idle state so room / speed / idle-gap setting can be changed and a new replay started
+    const onReset = () => {
+        if (startedRef.current && client?.connected) send("stop");
+        startedRef.current = false;
+        ydocRef.current?.destroy();
+        ydocRef.current = new Y.Doc();
+        scheduleRender();
+        setStatus("idle");
+        setPositionMs(0);
+        setDurationMs(0);
+        setTotal(0);
+        setApplied(0);
+        setRealDurationMs(0);
+        setOriginalMs(0);
+        setGaps([]);
+        setRunOutput(null);
+        setRunningBy(null);
+        setError(null);
     };
 
     const buttonLabel = {
@@ -259,14 +304,24 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
                     disabled={started}
                     style={{ width: 160 }}
                 />
-                <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={started}>
+                <select value={speed} onChange={(e) => onSpeedChange(Number(e.target.value))}>
                     {SPEEDS.map((s) => (
                         <option key={s} value={s}>{s}x</option>
                     ))}
                 </select>
+                <label title="Shorten long idle stretches (over 3 s) so the replay doesn't sit still">
+                    <input
+                        type="checkbox"
+                        checked={skipIdle}
+                        onChange={(e) => setSkipIdle(e.target.checked)}
+                        disabled={started}
+                    />{" "}
+                    Skip idle gaps
+                </label>
                 <button onClick={onPlayPause} disabled={!connected || !roomCode.trim()}>
                     {buttonLabel}
                 </button>
+                {started && <button onClick={onReset}>Reset</button>}
                 <span style={{ color: "#888", marginLeft: "auto" }}>
                     {started ? `event ${applied} / ${total}` : connected ? "ready" : "connecting..."}
                 </span>
@@ -274,23 +329,52 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
 
             <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "0 8px 6px" }}>
                 <span style={{ fontFamily: "monospace" }}>{formatTime(positionMs)}</span>
-                <input
-                    type="range"
-                    min={0}
-                    max={Math.max(durationMs, 1)}
-                    step={10}
-                    value={Math.min(positionMs, Math.max(durationMs, 1))}
-                    disabled={!started || durationMs === 0}
-                    onChange={(e) => {
-                        scrubbingRef.current = true;
-                        setPositionMs(Number(e.target.value));
-                    }}
-                    onPointerUp={commitScrub}
-                    onKeyUp={commitScrub}
-                    style={{ flex: 1 }}
-                />
+                <div style={{ flex: 1 }}>
+                    {/* one tick per shortened idle stretch; hover for how much time was cut */}
+                    <div style={{ position: "relative", height: 8 }}>
+                        {durationMs > 0 && gaps.map((g, i) => (
+                            <div
+                                key={i}
+                                title={`${formatTime(g.skippedMs)} of idle time skipped here`}
+                                style={{
+                                    position: "absolute",
+                                    left: `${(g.positionMs / durationMs) * 100}%`,
+                                    top: 0,
+                                    width: 6,
+                                    height: 8,
+                                    marginLeft: -3,
+                                    background: "#f9a825",
+                                    borderRadius: 1,
+                                    cursor: "help",
+                                }}
+                            />
+                        ))}
+                    </div>
+                    <input
+                        type="range"
+                        min={0}
+                        max={Math.max(durationMs, 1)}
+                        step={10}
+                        value={Math.min(positionMs, Math.max(durationMs, 1))}
+                        disabled={!started || durationMs === 0}
+                        onChange={(e) => {
+                            scrubbingRef.current = true;
+                            setPositionMs(Number(e.target.value));
+                        }}
+                        onPointerUp={commitScrub}
+                        onKeyUp={commitScrub}
+                        style={{ width: "100%", margin: 0 }}
+                    />
+                </div>
                 <span style={{ fontFamily: "monospace" }}>{formatTime(durationMs)}</span>
             </div>
+
+            {started && (
+                <div style={{ color: "#888", padding: "0 8px 6px", fontSize: 12 }}>
+                    Original session time: {formatTime(originalMs)} / {formatTime(realDurationMs)}
+                    {gaps.length > 0 && ` - ${gaps.length} idle gap${gaps.length > 1 ? "s" : ""} shortened (orange marks)`}
+                </div>
+            )}
 
             {error && <div style={{ color: "#f9a825", padding: "0 8px 6px" }}>{error}</div>}
 

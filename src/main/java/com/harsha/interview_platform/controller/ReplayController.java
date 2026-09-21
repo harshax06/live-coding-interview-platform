@@ -42,6 +42,11 @@ public class ReplayController {
         }
     }
 
+    @MessageMapping("/replay/{replayId}/speed")
+    public void speed(@DestinationVariable String replayId, ReplayRequest request) {
+        if (validId(replayId)) replayService.setSpeed(replayId, request.getSpeed());
+    }
+
     @MessageMapping("/replay/{replayId}/stop")
     public void stop(@DestinationVariable String replayId) {
         if (validId(replayId)) replayService.stop(replayId);
