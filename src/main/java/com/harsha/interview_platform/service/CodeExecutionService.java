@@ -18,13 +18,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 public class CodeExecutionService {
 
     private static final int MAX_OUTPUT_CHARS = 64 * 1024;
 
-    // Cached pool: each run uses 2 reader threads, a fixed pool of 2 would serialize concurrent runs
+    // Cached pool: each run uses 2 reader threads
     private final ExecutorService streamReaderPool = Executors.newCachedThreadPool();
 
     public ExecutionResult execute(String languageId, String code) {
@@ -42,7 +43,6 @@ public class CodeExecutionService {
 
         try {
             dir = Files.createTempDirectory("exec-");
-            // Container user (1000) must be able to read the mount regardless of host uid
             makeWorldReadable(dir, "rwxr-xr-x");
             Path src = dir.resolve(lang.fileName());
             Files.writeString(src, code, StandardCharsets.UTF_8);
@@ -52,8 +52,13 @@ public class CodeExecutionService {
             Process started = process;
             started.getOutputStream().close();
 
-            Future<String> stdoutFuture = streamReaderPool.submit(() -> readStream(started.getInputStream()));
-            Future<String> stderrFuture = streamReaderPool.submit(() -> readStream(started.getErrorStream()));
+            // Set by a reader thread when output blows past the cap; that reader also kills the container
+            AtomicBoolean overflow = new AtomicBoolean(false);
+
+            Future<String> stdoutFuture = streamReaderPool.submit(
+                    () -> readStream(started.getInputStream(), overflow, containerName));
+            Future<String> stderrFuture = streamReaderPool.submit(
+                    () -> readStream(started.getErrorStream(), overflow, containerName));
 
             boolean finished = started.waitFor(lang.timeoutSeconds(), TimeUnit.SECONDS);
 
@@ -61,19 +66,34 @@ public class CodeExecutionService {
                 // Killing the docker CLI does not stop the container; kill it by name
                 killContainer(containerName);
                 started.destroyForcibly();
+
+                // Streams close once the container dies, so we can still return what was printed so far
+                String partialOut = getQuietly(stdoutFuture);
+                String partialErr = getQuietly(stderrFuture);
+                String msg = "Execution timed out after " + lang.timeoutSeconds() + "s";
                 return new ExecutionResult(
-                        "",
-                        "Execution timed out after " + lang.timeoutSeconds() + "s",
+                        partialOut,
+                        partialErr.isEmpty() ? msg : partialErr + "\n" + msg,
                         -1,
                         true);
             }
 
             String stdout = stdoutFuture.get(2, TimeUnit.SECONDS);
             String stderr = stderrFuture.get(2, TimeUnit.SECONDS);
-            return new ExecutionResult(stdout, stderr, started.exitValue(), false);
+            int exit = started.exitValue();
+
+            if (overflow.get()) {
+                stderr += "\n[Output limit exceeded (" + (MAX_OUTPUT_CHARS / 1024) + " KB) - run stopped]";
+                exit = -1;
+            } else if (exit == 137) {
+                stderr += "\n[Process was killed - most likely it exceeded the memory limit ("
+                        + lang.memoryMb() + " MB)]";
+            }
+
+            return new ExecutionResult(stdout, stderr, exit, false);
 
         } catch (Exception e) {
-            e.printStackTrace(); // some exceptions (e.g. TimeoutException) have a null message
+            e.printStackTrace();
             return new ExecutionResult("",
                     "Execution error: " + e.getClass().getSimpleName() + ": " + e.getMessage(),
                     -1, false);
@@ -98,6 +118,10 @@ public class CodeExecutionService {
         c.add("--pids-limit=" + lang.pidsLimit());
         c.add("--cap-drop=ALL");
         c.add("--security-opt"); c.add("no-new-privileges");
+        // Docker keeps a copy of container output in its own log file; cap it so an
+        // output flood can't fill the host disk before we kill the container
+        c.add("--log-opt"); c.add("max-size=1m");
+        c.add("--log-opt"); c.add("max-file=1");
         c.add("--user"); c.add("1000:1000");
         c.add("-v"); c.add(hostDir.toAbsolutePath() + ":/sandbox:ro");
         c.add("--workdir"); c.add("/tmp");
@@ -106,7 +130,6 @@ public class CodeExecutionService {
         return c;
     }
 
-    /** POSIX permissions only exist on Linux/macOS; on Windows Docker Desktop handles bind-mount access itself. */
     private void makeWorldReadable(Path path, String perms) {
         try {
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(perms));
@@ -121,20 +144,32 @@ public class CodeExecutionService {
         }
     }
 
-    /** Keeps at most MAX_OUTPUT_CHARS but keeps draining so the process never blocks on a full pipe. */
-    private String readStream(InputStream inputStream) throws Exception {
+    private String getQuietly(Future<String> f) {
+        try {
+            return f.get(2, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * Keeps at most MAX_OUTPUT_CHARS. The first reader to cross the cap kills the container
+     * (fail fast instead of waiting for the timeout) and keeps draining so nothing blocks.
+     */
+    private String readStream(InputStream inputStream, AtomicBoolean overflow, String containerName)
+            throws Exception {
         StringBuilder output = new StringBuilder();
-        boolean truncated = false;
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             char[] buf = new char[4096];
             int n;
             while ((n = reader.read(buf)) != -1) {
                 int room = MAX_OUTPUT_CHARS - output.length();
                 if (room > 0) output.append(buf, 0, Math.min(n, room));
-                if (n > room) truncated = true;
+                if (n > room && overflow.compareAndSet(false, true)) {
+                    killContainer(containerName);
+                }
             }
         }
-        if (truncated) output.append("\n[output truncated]");
         return output.toString();
     }
 

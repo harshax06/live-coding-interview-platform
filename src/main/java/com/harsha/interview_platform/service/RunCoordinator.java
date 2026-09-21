@@ -3,9 +3,13 @@ package com.harsha.interview_platform.service;
 import com.harsha.interview_platform.dto.request.ExecutionResult;
 import com.harsha.interview_platform.dto.request.RunRequest;
 import com.harsha.interview_platform.dto.response.RunEvent;
+import com.harsha.interview_platform.event.SessionEventProducer;
+import com.harsha.interview_platform.event.SessionEventType;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -17,6 +21,7 @@ import java.util.concurrent.Semaphore;
  *  - one run at a time per room
  *  - at most MAX_CONCURRENT_RUNS sandboxes across the whole server
  *  - execution happens off the STOMP thread, results are broadcast to the whole room
+ *  - accepted runs and their results are appended to the session event log (Kafka)
  */
 @Service
 public class RunCoordinator {
@@ -26,15 +31,18 @@ public class RunCoordinator {
 
     private final CodeExecutionService executionService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final SessionEventProducer eventProducer;
 
     private final Set<String> runningRooms = ConcurrentHashMap.newKeySet();
     private final Semaphore capacity = new Semaphore(MAX_CONCURRENT_RUNS);
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
     public RunCoordinator(CodeExecutionService executionService,
-                          SimpMessagingTemplate messagingTemplate) {
+                          SimpMessagingTemplate messagingTemplate,
+                          SessionEventProducer eventProducer) {
         this.executionService = executionService;
         this.messagingTemplate = messagingTemplate;
+        this.eventProducer = eventProducer;
     }
 
     public void submit(String roomCode, RunRequest request) {
@@ -62,19 +70,38 @@ public class RunCoordinator {
         // Announce before starting so a fast run can't deliver DONE ahead of RUNNING
         send(roomCode, RunEvent.running(user, request.getLanguage()));
 
+        Map<String, Object> requested = new LinkedHashMap<>();
+        requested.put("language", request.getLanguage());
+        requested.put("code", code);
+        eventProducer.publish(roomCode, SessionEventType.RUN_REQUESTED, user, requested);
+
         pool.execute(() -> {
             try {
                 ExecutionResult r = executionService.execute(request.getLanguage(), code);
                 send(roomCode, RunEvent.done(user, request.getLanguage(),
                         r.getStdout(), r.getStderr(), r.getExitCode(), r.isTimedOut()));
+                publishCompleted(roomCode, user, request.getLanguage(),
+                        r.getStdout(), r.getStderr(), r.getExitCode(), r.isTimedOut());
             } catch (Exception e) {
-                send(roomCode, RunEvent.done(user, request.getLanguage(),
-                        "", "Execution error: " + e.getMessage(), -1, false));
+                String err = "Execution error: " + e.getMessage();
+                send(roomCode, RunEvent.done(user, request.getLanguage(), "", err, -1, false));
+                publishCompleted(roomCode, user, request.getLanguage(), "", err, -1, false);
             } finally {
                 capacity.release();
                 runningRooms.remove(roomCode);
             }
         });
+    }
+
+    private void publishCompleted(String roomCode, String user, String language,
+                                  String stdout, String stderr, int exitCode, boolean timedOut) {
+        Map<String, Object> completed = new LinkedHashMap<>();
+        completed.put("language", language);
+        completed.put("stdout", stdout);
+        completed.put("stderr", stderr);
+        completed.put("exitCode", exitCode);
+        completed.put("timedOut", timedOut);
+        eventProducer.publish(roomCode, SessionEventType.RUN_COMPLETED, user, completed);
     }
 
     private void send(String roomCode, RunEvent event) {

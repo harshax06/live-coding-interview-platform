@@ -16,6 +16,13 @@ type RunEvent = {
     message: string | null;
 };
 
+// Yjs updates are binary; STOMP/JSON needs text
+function toBase64(bytes: Uint8Array): string {
+    let binary = "";
+    bytes.forEach((b) => (binary += String.fromCharCode(b)));
+    return btoa(binary);
+}
+
 // ids match both Monaco's language ids and the backend Languages registry
 const LANGUAGES = ["python", "javascript", "java", "cpp", "c"];
 
@@ -29,6 +36,11 @@ function App({ roomJoinCode = "default-room" }: { roomJoinCode?: string }) {
     const metaRef = useRef<Y.Map<string> | null>(null);
 
     const { client, connected } = useStompClient();
+    // The Yjs listener is created once at editor mount, so it reads the live client through a ref
+    const clientRef = useRef<typeof client>(null);
+    useEffect(() => {
+        clientRef.current = connected ? client : null;
+    }, [client, connected]);
     const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
 
     // stable per tab (previously regenerated inside the presence effect)
@@ -68,6 +80,19 @@ function App({ roomJoinCode = "default-room" }: { roomJoinCode?: string }) {
             new Set([editor]),
             provider.awareness
         );
+
+        // Report this user's own edits to the backend event log (Kafka).
+        // Updates that arrive from other users have origin === provider, so they are skipped:
+        // every edit is published exactly once, by the person who typed it.
+        ydoc.on("update", (update: Uint8Array, origin: unknown) => {
+            if (origin === provider) return;
+            const stomp = clientRef.current;
+            if (!stomp) return;
+            stomp.publish({
+                destination: `/app/events/${roomJoinCode}/edit`,
+                body: JSON.stringify({ userId, update: toBase64(update) }),
+            });
+        });
 
         // Selected language is shared through Yjs so both clients always run the same thing
         const meta = ydoc.getMap<string>("meta");
