@@ -34,6 +34,8 @@ function VideoCall({ client, connected, roomCode, userId, onlineUsers }: VideoCa
 
     const remoteUserId = onlineUsers.filter((id) => id !== userId).sort()[0] ?? null;
 
+    const [callAttempt, setCallAttempt] = useState(0);
+
     const { remoteStream, connectionState } = useWebRTC({
         client,
         connected,
@@ -41,7 +43,22 @@ function VideoCall({ client, connected, roomCode, userId, onlineUsers }: VideoCa
         userId,
         remoteUserId,
         localStream,
+        // bumping this forces useWebRTC's effect to tear down and rebuild the RTCPeerConnection
+        resetKey: callAttempt,
     });
+
+    // A "failed" state doesn't recover on its own - offer a manual retry instead of a dead tile
+    const retryCall = () => setCallAttempt((n) => n + 1);
+
+    // If "connecting" drags past 15s, say so - most successful connections settle in 1-3s,
+    // so a long stall almost always means the ICE checklist from Day 29 needs a look
+    const [stalled, setStalled] = useState(false);
+    useEffect(() => {
+        setStalled(false);
+        if (connectionState !== "connecting" && connectionState !== "new") return;
+        const timer = setTimeout(() => setStalled(true), 15_000);
+        return () => clearTimeout(timer);
+    }, [connectionState, callAttempt]);
 
     // Ask for camera/mic once. getUserMedia needs a secure context - fine on localhost, needs
     // HTTPS once this is deployed (Week 9).
@@ -112,10 +129,23 @@ function VideoCall({ client, connected, roomCode, userId, onlineUsers }: VideoCa
                     videoRef={remoteVideoRef}
                     muted={false}
                     label={remoteUserId ?? "Waiting for someone to join..."}
-                    placeholder={remoteUserId ? connectionStateLabel(connectionState) : "Nobody else here yet"}
+                    placeholder={
+                        remoteUserId
+                            ? stalled
+                                ? "Still connecting - this is taking longer than usual"
+                                : connectionStateLabel(connectionState)
+                            : "Nobody else here yet"
+                    }
                     cameraOff={!remoteStream}
                 />
             </div>
+
+            <ConnectionBanner
+                connectionState={connectionState}
+                remoteUserId={remoteUserId}
+                stalled={stalled}
+                onRetry={retryCall}
+            />
 
             <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={toggleMic} disabled={mediaStatus !== "ready"}>
@@ -137,6 +167,43 @@ function VideoCall({ client, connected, roomCode, userId, onlineUsers }: VideoCa
             </div>
         </div>
     );
+}
+
+function ConnectionBanner({
+                              connectionState,
+                              remoteUserId,
+                              stalled,
+                              onRetry,
+                          }: {
+    connectionState: string;
+    remoteUserId: string | null;
+    stalled: boolean;
+    onRetry: () => void;
+}) {
+    if (!remoteUserId) return null;
+
+    if (connectionState === "failed" || connectionState === "disconnected") {
+        return (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: "#f48771" }}>
+                <span>
+                    {connectionState === "failed" ? "Call connection failed." : "Call disconnected."}
+                </span>
+                <button onClick={onRetry}>Retry call</button>
+            </div>
+        );
+    }
+
+    if (stalled) {
+        return (
+            <div style={{ fontSize: 12, color: "#f9a825" }}>
+                Still trying to connect. If this doesn't resolve, check your network - a firewall or VPN
+                commonly blocks the direct connection.{" "}
+                <button onClick={onRetry}>Retry call</button>
+            </div>
+        );
+    }
+
+    return null;
 }
 
 function mediaStatusLabel(status: MediaStatus): string {

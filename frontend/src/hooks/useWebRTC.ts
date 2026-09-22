@@ -22,6 +22,8 @@ interface UseWebRTCOptions {
     /** The other participant's id. WebRTC here is always exactly two peers per room (Day 28 UI). */
     remoteUserId: string | null;
     localStream: MediaStream | null;
+    /** Bump this (e.g. on a "Retry call" click) to tear down and rebuild the peer connection. */
+    resetKey?: number;
 }
 
 /**
@@ -29,7 +31,7 @@ interface UseWebRTCOptions {
  * The lower userId always makes the offer - avoids both sides racing to call each other
  * (a "glare" condition) without needing any extra coordination.
  */
-export function useWebRTC({ client, connected, roomCode, userId, remoteUserId, localStream }: UseWebRTCOptions) {
+export function useWebRTC({ client, connected, roomCode, userId, remoteUserId, localStream, resetKey = 0 }: UseWebRTCOptions) {
     const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
     const [connectionState, setConnectionState] = useState<PeerConnectionState>("new");
 
@@ -144,8 +146,10 @@ export function useWebRTC({ client, connected, roomCode, userId, remoteUserId, l
             subscription.unsubscribe();
             teardown();
         };
+        // resetKey is intentionally a dependency: bumping it (a manual retry) re-runs this
+        // effect, which tears down the old RTCPeerConnection and starts a fresh offer/answer.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [connected, client, roomCode, userId, remoteUserId]);
+    }, [connected, client, roomCode, userId, remoteUserId, resetKey]);
 
     // Local stream can arrive after the peer connection already exists (camera permission was slow)
     useEffect(() => {
