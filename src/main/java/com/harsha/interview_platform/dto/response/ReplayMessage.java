@@ -6,6 +6,7 @@ import java.util.List;
  * Everything the server sends to /topic/replay/{replayId}.
  *
  * kind:
+ *   RECORDINGS - answer to "list": the room's recordings, newest first
  *   STARTED  - replay is ready: total events, durationMs (replay timeline), realDurationMs (original
  *              session length) and gaps (where idle time was shortened)
  *   EVENT    - one recorded event; instant=true means it is part of a catch-up burst after RESET
@@ -20,6 +21,9 @@ public class ReplayMessage {
 
     /** An idle stretch that was shortened: it sits at positionMs on the replay timeline and skippedMs were cut. */
     public record Gap(long positionMs, long skippedMs) {}
+
+    /** One recorded session of a room. startedAt / endedAt are epoch millis of its first / last event. */
+    public record Recording(String recordingId, long startedAt, long endedAt, long eventCount) {}
 
     private final String kind;
     private final String replayId;
@@ -36,10 +40,12 @@ public class ReplayMessage {
     private final boolean instant;
     private final String message;
     private final List<Gap> gaps;
+    private final List<Recording> recordings;
 
     private ReplayMessage(String kind, String replayId, int index, int total, String type, String userId,
                           long timestamp, long playOffsetMs, long durationMs, long realDurationMs,
-                          long positionMs, String payload, boolean instant, String message, List<Gap> gaps) {
+                          long positionMs, String payload, boolean instant, String message, List<Gap> gaps,
+                          List<Recording> recordings) {
         this.kind = kind;
         this.replayId = replayId;
         this.index = index;
@@ -55,28 +61,34 @@ public class ReplayMessage {
         this.instant = instant;
         this.message = message;
         this.gaps = gaps;
+        this.recordings = recordings;
     }
 
     public static ReplayMessage started(String replayId, int total, long durationMs,
                                         long realDurationMs, List<Gap> gaps) {
         return new ReplayMessage("STARTED", replayId, -1, total, null, null, 0, 0,
-                durationMs, realDurationMs, 0, null, false, null, gaps);
+                durationMs, realDurationMs, 0, null, false, null, gaps, List.of());
     }
 
     public static ReplayMessage control(String kind, String replayId, int total, long durationMs, long positionMs) {
         return new ReplayMessage(kind, replayId, -1, total, null, null, 0, 0,
-                durationMs, 0, positionMs, null, false, null, List.of());
+                durationMs, 0, positionMs, null, false, null, List.of(), List.of());
     }
 
     public static ReplayMessage event(String replayId, int index, int total, String type, String userId,
                                       long timestamp, long playOffsetMs, long durationMs,
                                       String payload, boolean instant) {
         return new ReplayMessage("EVENT", replayId, index, total, type, userId, timestamp,
-                playOffsetMs, durationMs, 0, playOffsetMs, payload, instant, null, List.of());
+                playOffsetMs, durationMs, 0, playOffsetMs, payload, instant, null, List.of(), List.of());
+    }
+
+    public static ReplayMessage recordings(String replayId, List<Recording> recordings) {
+        return new ReplayMessage("RECORDINGS", replayId, -1, 0, null, null, 0, 0, 0, 0, 0, null, false, null,
+                List.of(), recordings);
     }
 
     public static ReplayMessage error(String replayId, String message) {
-        return new ReplayMessage("ERROR", replayId, -1, 0, null, null, 0, 0, 0, 0, 0, null, false, message, List.of());
+        return new ReplayMessage("ERROR", replayId, -1, 0, null, null, 0, 0, 0, 0, 0, null, false, message, List.of(), List.of());
     }
 
     public String getKind() { return kind; }
@@ -94,4 +106,5 @@ public class ReplayMessage {
     public boolean isInstant() { return instant; }
     public String getMessage() { return message; }
     public List<Gap> getGaps() { return gaps; }
+    public List<Recording> getRecordings() { return recordings; }
 }

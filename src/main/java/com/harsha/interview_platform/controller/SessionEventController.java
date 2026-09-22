@@ -1,6 +1,7 @@
 package com.harsha.interview_platform.controller;
 
 import com.harsha.interview_platform.dto.request.EditEventRequest;
+import com.harsha.interview_platform.event.RecordingIds;
 import com.harsha.interview_platform.event.SessionEventProducer;
 import com.harsha.interview_platform.event.SessionEventType;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
@@ -25,6 +26,7 @@ public class SessionEventController {
         String update = request.getUpdate();
         if (update == null || update.isEmpty() || update.length() > MAX_UPDATE_CHARS) return;
 
-        producer.publish(roomCode, SessionEventType.EDIT, request.getUserId(), update);
+        producer.publish(roomCode, RecordingIds.orRoomFallback(roomCode, request.getRecordingId()),
+                SessionEventType.EDIT, request.getUserId(), update);
     }
 }

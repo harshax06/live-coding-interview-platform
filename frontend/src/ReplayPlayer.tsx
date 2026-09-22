@@ -4,7 +4,7 @@ import * as Y from "yjs";
 import { useStompClient } from "./hooks/useStompClient";
 
 type ReplayMessage = {
-    kind: "STARTED" | "EVENT" | "RESET" | "SEEKED" | "PAUSED" | "FINISHED" | "STOPPED" | "ERROR";
+    kind: "RECORDINGS" | "STARTED" | "EVENT" | "RESET" | "SEEKED" | "PAUSED" | "FINISHED" | "STOPPED" | "ERROR";
     index: number;
     total: number;
     type: string | null;
@@ -15,9 +15,17 @@ type ReplayMessage = {
     timestamp: number;
     realDurationMs?: number;
     gaps?: { positionMs: number; skippedMs: number }[];
+    recordings?: Recording[];
     payload: string | null;
     instant: boolean;
     message: string | null;
+};
+
+type Recording = {
+    recordingId: string;
+    startedAt: number;   // epoch millis of the first event
+    endedAt: number;     // epoch millis of the last event
+    eventCount: number;
 };
 
 type RunOutput = {
@@ -66,6 +74,8 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
     const [error, setError] = useState<string | null>(null);
     const [runOutput, setRunOutput] = useState<RunOutput | null>(null);
     const [runningBy, setRunningBy] = useState<string | null>(null);
+    const [recordings, setRecordings] = useState<Recording[]>([]);
+    const [selectedRecording, setSelectedRecording] = useState("");   // "" = the room's latest
     const [skipIdle, setSkipIdle] = useState(true);
     const [realDurationMs, setRealDurationMs] = useState(0);
     const [originalMs, setOriginalMs] = useState(0);
@@ -142,6 +152,9 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
     // ---- messages from the server ----
     const handleMessage = useCallback((m: ReplayMessage) => {
         switch (m.kind) {
+            case "RECORDINGS":
+                setRecordings(m.recordings ?? []);
+                break;
             case "STARTED":
                 setDurationMs(m.durationMs);
                 setTotal(m.total);
@@ -214,6 +227,18 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
         };
     }, [connected, client, replayId, handleMessage]);
 
+    // While idle, keep the "which recording?" list current for the room being typed in
+    useEffect(() => {
+        if (!connected || !client || status !== "idle" || !roomCode.trim()) return;
+        const timer = setTimeout(() => {
+            client.publish({
+                destination: `/app/replay/${replayId}/list`,
+                body: JSON.stringify({ roomCode }),
+            });
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [connected, client, status, roomCode, replayId]);
+
     // Smooth scrub bar while playing (server only sends a message per recorded event)
     useEffect(() => {
         if (status !== "playing") return;
@@ -236,7 +261,12 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
         if (!connected) return;
         if (status === "idle" || status === "error") {
             startedRef.current = true;
-            send("start", { roomCode, speed, maxGapMs: skipIdle ? 3000 : 0 });
+            send("start", {
+                roomCode,
+                recordingId: selectedRecording || undefined,
+                speed,
+                maxGapMs: skipIdle ? 3000 : 0,
+            });
         } else if (status === "playing") {
             send("pause");
         } else {
@@ -300,10 +330,27 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
                 <span>Room:</span>
                 <input
                     value={roomCode}
-                    onChange={(e) => setRoomCode(e.target.value)}
+                    onChange={(e) => {
+                        setRoomCode(e.target.value);
+                        setSelectedRecording("");
+                        setRecordings([]);
+                    }}
                     disabled={started}
                     style={{ width: 160 }}
                 />
+                <select
+                    value={selectedRecording}
+                    onChange={(e) => setSelectedRecording(e.target.value)}
+                    disabled={started}
+                    title="A room gets a new recording each time everyone leaves and someone comes back"
+                >
+                    <option value="">Latest recording</option>
+                    {recordings.map((r) => (
+                        <option key={r.recordingId} value={r.recordingId}>
+                            {new Date(r.startedAt).toLocaleString()} - {r.eventCount} events - {formatTime(r.endedAt - r.startedAt)}
+                        </option>
+                    ))}
+                </select>
                 <select value={speed} onChange={(e) => onSpeedChange(Number(e.target.value))}>
                     {SPEEDS.map((s) => (
                         <option key={s} value={s}>{s}x</option>

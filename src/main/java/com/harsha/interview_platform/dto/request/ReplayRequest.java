@@ -3,13 +3,17 @@ package com.harsha.interview_platform.dto.request;
 /** Body for /app/replay/{replayId}/start and /seek. Every field is optional except where noted. */
 public class ReplayRequest {
 
-    private String roomCode;   // start: required
+    private String roomCode;   // start: which room (required unless recordingId is given); list: required
+    private String recordingId; // start: a specific recording; omitted = the room's latest
     private Double speed;      // start: 0.25 - 16, default 1
     private Long maxGapMs;     // start: longest pause kept between events, default 3000; <= 0 means keep real gaps
     private Long positionMs;   // seek: target position on the replay timeline
 
     public String getRoomCode() { return roomCode; }
     public void setRoomCode(String roomCode) { this.roomCode = roomCode; }
+
+    public String getRecordingId() { return recordingId; }
+    public void setRecordingId(String recordingId) { this.recordingId = recordingId; }
 
     public Double getSpeed() { return speed; }
     public void setSpeed(Double speed) { this.speed = speed; }

@@ -3,6 +3,7 @@ package com.harsha.interview_platform.service;
 import com.harsha.interview_platform.dto.request.ExecutionResult;
 import com.harsha.interview_platform.dto.request.RunRequest;
 import com.harsha.interview_platform.dto.response.RunEvent;
+import com.harsha.interview_platform.event.RecordingIds;
 import com.harsha.interview_platform.event.SessionEventProducer;
 import com.harsha.interview_platform.event.SessionEventType;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -48,6 +49,7 @@ public class RunCoordinator {
     public void submit(String roomCode, RunRequest request) {
         String user = request.getUserId();
         String code = request.getCode();
+        String recordingId = RecordingIds.orRoomFallback(roomCode, request.getRecordingId());
 
         if (code == null || code.isBlank()) {
             send(roomCode, RunEvent.rejected(user, "Nothing to run - the editor is empty."));
@@ -73,19 +75,19 @@ public class RunCoordinator {
         Map<String, Object> requested = new LinkedHashMap<>();
         requested.put("language", request.getLanguage());
         requested.put("code", code);
-        eventProducer.publish(roomCode, SessionEventType.RUN_REQUESTED, user, requested);
+        eventProducer.publish(roomCode, recordingId, SessionEventType.RUN_REQUESTED, user, requested);
 
         pool.execute(() -> {
             try {
                 ExecutionResult r = executionService.execute(request.getLanguage(), code);
                 send(roomCode, RunEvent.done(user, request.getLanguage(),
                         r.getStdout(), r.getStderr(), r.getExitCode(), r.isTimedOut()));
-                publishCompleted(roomCode, user, request.getLanguage(),
+                publishCompleted(roomCode, recordingId, user, request.getLanguage(),
                         r.getStdout(), r.getStderr(), r.getExitCode(), r.isTimedOut());
             } catch (Exception e) {
                 String err = "Execution error: " + e.getMessage();
                 send(roomCode, RunEvent.done(user, request.getLanguage(), "", err, -1, false));
-                publishCompleted(roomCode, user, request.getLanguage(), "", err, -1, false);
+                publishCompleted(roomCode, recordingId, user, request.getLanguage(), "", err, -1, false);
             } finally {
                 capacity.release();
                 runningRooms.remove(roomCode);
@@ -93,7 +95,7 @@ public class RunCoordinator {
         });
     }
 
-    private void publishCompleted(String roomCode, String user, String language,
+    private void publishCompleted(String roomCode, String recordingId, String user, String language,
                                   String stdout, String stderr, int exitCode, boolean timedOut) {
         Map<String, Object> completed = new LinkedHashMap<>();
         completed.put("language", language);
@@ -101,7 +103,7 @@ public class RunCoordinator {
         completed.put("stderr", stderr);
         completed.put("exitCode", exitCode);
         completed.put("timedOut", timedOut);
-        eventProducer.publish(roomCode, SessionEventType.RUN_COMPLETED, user, completed);
+        eventProducer.publish(roomCode, recordingId, SessionEventType.RUN_COMPLETED, user, completed);
     }
 
     private void send(String roomCode, RunEvent event) {

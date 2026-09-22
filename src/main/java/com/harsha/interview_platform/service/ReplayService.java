@@ -45,14 +45,21 @@ public class ReplayService {
 
     // ---- commands (called from ReplayController) ----
 
-    public void start(String replayId, String roomCode, Double speed, Long maxGapMs) {
+    public void start(String replayId, String roomCode, String recordingId, Double speed, Long maxGapMs) {
         close(replayId, false);
 
-        if (roomCode == null || roomCode.isBlank()) {
-            send(replayId, ReplayMessage.error(replayId, "roomCode is required"));
-            return;
+        // A specific recording if asked for, otherwise the room's most recent one
+        String sessionKey = recordingId == null || recordingId.isBlank() ? null : recordingId.trim();
+        if (sessionKey == null) {
+            if (roomCode == null || roomCode.isBlank()) {
+                send(replayId, ReplayMessage.error(replayId, "roomCode is required"));
+                return;
+            }
+            sessionKey = repository.findLatestSessionKey(roomCode.trim());
         }
-        List<SessionEventRecord> events = repository.findBySessionKeyOrderByIdAsc(roomCode);
+        List<SessionEventRecord> events = sessionKey == null
+                ? List.of()
+                : repository.findBySessionKeyOrderByIdAsc(sessionKey);
         if (events.isEmpty()) {
             send(replayId, ReplayMessage.error(replayId, "No recorded events for room " + roomCode));
             return;
@@ -79,6 +86,20 @@ public class ReplayService {
     public void seek(String replayId, long positionMs) {
         ReplaySession s = sessions.get(replayId);
         if (s != null) s.seek(positionMs);
+    }
+
+    public void listRecordings(String replayId, String roomCode) {
+        if (roomCode == null || roomCode.isBlank()) return;
+
+        List<ReplayMessage.Recording> recordings = new ArrayList<>();
+        for (Object[] row : repository.findRecordingRows(roomCode.trim())) {
+            recordings.add(new ReplayMessage.Recording(
+                    (String) row[0],
+                    ((Number) row[1]).longValue(),
+                    ((Number) row[2]).longValue(),
+                    ((Number) row[3]).longValue()));
+        }
+        send(replayId, ReplayMessage.recordings(replayId, recordings));
     }
 
     public void setSpeed(String replayId, Double speed) {

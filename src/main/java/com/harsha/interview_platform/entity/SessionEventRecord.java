@@ -11,7 +11,10 @@ import lombok.Setter;
 @Entity
 @Table(
         name = "session_events",
-        indexes = @Index(name = "idx_session_events_session_key", columnList = "session_key, id"))
+        indexes = {
+                @Index(name = "idx_session_events_session_key", columnList = "session_key, id"),
+                @Index(name = "idx_session_events_room_code", columnList = "room_code")
+        })
 @Getter
 @Setter
 public class SessionEventRecord {
@@ -24,9 +27,13 @@ public class SessionEventRecord {
     @Column(name = "event_id", nullable = false, unique = true)
     private String eventId;
 
-    // The Kafka record key (the room code today). Not the same thing as sessions.id.
+    // The recording id (one Yjs document lifetime). Not the same thing as sessions.id.
     @Column(name = "session_key", nullable = false)
     private String sessionKey;
+
+    // The room the recording happened in. A room can have many recordings over time.
+    @Column(name = "room_code")
+    private String roomCode;
 
     @Column(nullable = false)
     private String type;

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import VideoCall from "./VideoCall";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
@@ -46,6 +47,29 @@ function App({ roomJoinCode = "default-room" }: { roomJoinCode?: string }) {
     // stable per tab (previously regenerated inside the presence effect)
     const [userId] = useState(() => "user-" + Math.floor(Math.random() * 1000));
 
+    // --- recording: which document lifetime (Yjs lineage) do these edits belong to? ---
+    // The id lives inside the Yjs document (meta map), so everyone in the room shares it, and a room whose
+    // document is gone (everyone left) starts a NEW recording instead of mixing into the old one.
+    const recordingIdRef = useRef<string | null>(null);
+    const pendingEditsRef = useRef<string[]>([]);
+
+    // Sends queued edits once both the STOMP connection and the recording id are known (keeps order)
+    const flushPendingEdits = useCallback(() => {
+        const stomp = clientRef.current;
+        const recordingId = recordingIdRef.current;
+        if (!stomp || !recordingId) return;
+        for (const update of pendingEditsRef.current.splice(0)) {
+            stomp.publish({
+                destination: `/app/events/${roomJoinCode}/edit`,
+                body: JSON.stringify({ userId, recordingId, update }),
+            });
+        }
+    }, [roomJoinCode, userId]);
+
+    useEffect(() => {
+        flushPendingEdits();
+    }, [connected, client, flushPendingEdits]);
+
     const [language, setLanguage] = useState("python");
     const [running, setRunning] = useState(false);
     const [result, setResult] = useState<RunEvent | null>(null);
@@ -86,20 +110,32 @@ function App({ roomJoinCode = "default-room" }: { roomJoinCode?: string }) {
         // every edit is published exactly once, by the person who typed it.
         ydoc.on("update", (update: Uint8Array, origin: unknown) => {
             if (origin === provider) return;
-            const stomp = clientRef.current;
-            if (!stomp) return;
-            stomp.publish({
-                destination: `/app/events/${roomJoinCode}/edit`,
-                body: JSON.stringify({ userId, update: toBase64(update) }),
-            });
+            pendingEditsRef.current.push(toBase64(update));
+            flushPendingEdits();
+        });
+
+        // First one into a fresh document creates the recording id; everyone joining later reads it.
+        const meta = ydoc.getMap<string>("meta");
+        provider.on("sync", (isSynced: boolean) => {
+            if (!isSynced) return;
+            let id = meta.get("recordingId");
+            if (!id) {
+                id = crypto.randomUUID();
+                recordingIdRef.current = id;        // set BEFORE writing, so this very update is logged under it
+                meta.set("recordingId", id);
+            } else {
+                recordingIdRef.current = id;
+            }
+            flushPendingEdits();
         });
 
         // Selected language is shared through Yjs so both clients always run the same thing
-        const meta = ydoc.getMap<string>("meta");
         meta.observe(() => {
             const lang = meta.get("language") ?? "python";
             setLanguage(lang);
             monaco.editor.setModelLanguage(model, lang);
+            const id = meta.get("recordingId");
+            if (id) recordingIdRef.current = id;   // if two people created ids at once, everyone converges on one
         });
         metaRef.current = meta;
         monaco.editor.setModelLanguage(model, "python");
@@ -173,7 +209,7 @@ function App({ roomJoinCode = "default-room" }: { roomJoinCode?: string }) {
         setNotice(null);
         client.publish({
             destination: `/app/run/${roomJoinCode}`,
-            body: JSON.stringify({ language, code, userId }),
+            body: JSON.stringify({ language, code, userId, recordingId: recordingIdRef.current }),
         });
     };
 
@@ -204,6 +240,14 @@ function App({ roomJoinCode = "default-room" }: { roomJoinCode?: string }) {
                     {running ? "Running..." : "Run"}
                 </button>
             </div>
+
+            <VideoCall
+                client={client}
+                connected={connected}
+                roomCode={roomJoinCode}
+                userId={userId}
+                onlineUsers={onlineUsers}
+            />
 
             <div style={{ flex: 1, minHeight: 0 }}>
                 <Editor

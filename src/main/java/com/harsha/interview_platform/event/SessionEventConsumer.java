@@ -45,6 +45,7 @@ public class SessionEventConsumer {
         int inserted = repository.insertIfAbsent(
                 event.eventId(),
                 event.sessionId(),
+                event.roomCode() == null ? event.sessionId() : event.roomCode(), // old events: sessionId was the room code
                 event.type().name(),
                 event.userId() == null ? "unknown" : event.userId(),
                 event.timestamp(),

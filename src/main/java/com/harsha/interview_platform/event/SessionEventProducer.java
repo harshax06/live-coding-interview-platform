@@ -40,14 +40,14 @@ public class SessionEventProducer {
     }
 
     /** payload: a String is stored as-is (e.g. base64 Yjs update); any other object is stored as JSON. */
-    public void publish(String sessionId, SessionEventType type, String userId, Object payload) {
+    public void publish(String roomCode, String sessionId, SessionEventType type, String userId, Object payload) {
         long timestamp = System.currentTimeMillis();
         String eventId = UUID.randomUUID().toString();
 
         sender.execute(() -> {
             try {
                 String payloadText = payload instanceof String s ? s : objectMapper.writeValueAsString(payload);
-                SessionEvent event = new SessionEvent(eventId, sessionId, type, userId, timestamp, payloadText);
+                SessionEvent event = new SessionEvent(eventId, sessionId, roomCode, type, userId, timestamp, payloadText);
 
                 kafkaTemplate.send(TOPIC, sessionId, objectMapper.writeValueAsString(event))
                         .whenComplete((result, ex) -> {

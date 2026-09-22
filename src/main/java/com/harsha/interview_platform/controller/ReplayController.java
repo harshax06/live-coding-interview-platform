@@ -22,7 +22,14 @@ public class ReplayController {
     @MessageMapping("/replay/{replayId}/start")
     public void start(@DestinationVariable String replayId, ReplayRequest request) {
         if (!validId(replayId)) return;
-        replayService.start(replayId, request.getRoomCode(), request.getSpeed(), request.getMaxGapMs());
+        replayService.start(replayId, request.getRoomCode(), request.getRecordingId(),
+                request.getSpeed(), request.getMaxGapMs());
+    }
+
+    // Answers on the replay topic with a RECORDINGS message: every recording of the room, newest first
+    @MessageMapping("/replay/{replayId}/list")
+    public void list(@DestinationVariable String replayId, ReplayRequest request) {
+        if (validId(replayId)) replayService.listRecordings(replayId, request.getRoomCode());
     }
 
     @MessageMapping("/replay/{replayId}/pause")
