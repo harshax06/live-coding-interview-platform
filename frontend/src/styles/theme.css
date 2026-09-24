@@ -1,0 +1,192 @@
+:root {
+    --bg: #14141a;
+    --bg-elevated: #1c1c24;
+    --bg-card: #21212b;
+    --border: #2e2e3a;
+    --text: #f2f2f5;
+    --text-muted: #9a9aa8;
+    --text-faint: #6a6a78;
+    --accent: #6366f1;
+    --accent-hover: #7678f4;
+    --accent-text: #ffffff;
+    --success: #34d399;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --star: #fbbf24;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+}
+
+.page {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.container {
+    width: 100%;
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+.container-narrow {
+    width: 100%;
+    max-width: 400px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+.navbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+}
+
+.navbar-brand {
+    font-weight: 700;
+    font-size: 16px;
+    color: var(--text);
+    text-decoration: none;
+}
+
+.navbar-links {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.navbar-links a {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 14px;
+}
+
+.navbar-links a:hover, .navbar-links a.active {
+    color: var(--text);
+}
+
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+}
+
+.card-hover:hover {
+    border-color: var(--accent);
+    cursor: pointer;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 9px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.12s, border-color 0.12s;
+}
+
+.btn:hover { border-color: var(--text-faint); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+}
+
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.btn-block { width: 100%; }
+.btn-sm { padding: 6px 12px; font-size: 13px; }
+
+.input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text);
+    font-size: 14px;
+    font-family: var(--font);
+}
+
+.input:focus { outline: none; border-color: var(--accent); }
+
+.label {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    display: block;
+}
+
+.field { margin-bottom: 14px; }
+
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+}
+
+.badge-accent { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent-hover); border-color: transparent; }
+
+.error-text { color: var(--danger); font-size: 13px; }
+.muted { color: var(--text-muted); }
+.faint { color: var(--text-faint); }
+
+.stat {
+    background: var(--bg-elevated);
+    border-radius: var(--radius-sm);
+    padding: 10px 16px;
+    min-width: 110px;
+}
+
+.stat-value { font-size: 22px; font-weight: 700; }
+.stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+.grid-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+}
+
+.toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.link { color: var(--accent-hover); text-decoration: none; }
+.link:hover { text-decoration: underline; }
+
+a { color: inherit; }

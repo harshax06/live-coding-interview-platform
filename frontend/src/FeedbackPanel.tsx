@@ -23,15 +23,14 @@ function formatElapsed(ms: number): string {
 }
 
 function FeedbackPanel({ roomCode, recordingId, recordingJoinedAt }: FeedbackPanelProps) {
-    const { token, user, login, signup, logout } = useAuth();
+    // RoomPage sits behind ProtectedRoute - an authenticated user is guaranteed here.
+    const { token, user, logout } = useAuth();
 
     if (!recordingId) return null; // nothing to attach feedback to until the recording id resolves
 
     return (
         <div style={{ padding: 8, background: "#252525", color: "#fff", fontSize: 13 }}>
-            {!token || !user ? (
-                <AuthGate onLogin={login} onSignup={signup} />
-            ) : (
+            {!token || !user ? null : (
                 <SignedInPanel
                     roomCode={roomCode}
                     recordingId={recordingId}
@@ -45,60 +44,6 @@ function FeedbackPanel({ roomCode, recordingId, recordingJoinedAt }: FeedbackPan
     );
 }
 
-function AuthGate({
-                      onLogin,
-                      onSignup,
-                  }: {
-    onLogin: (email: string, password: string) => Promise<void>;
-    onSignup: (email: string, password: string, name: string) => Promise<void>;
-}) {
-    const [mode, setMode] = useState<"login" | "signup">("login");
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [name, setName] = useState("");
-    const [error, setError] = useState<string | null>(null);
-    const [busy, setBusy] = useState(false);
-
-    const submit = async () => {
-        setError(null);
-        setBusy(true);
-        try {
-            if (mode === "login") await onLogin(email, password);
-            else await onSignup(email, password, name);
-        } catch (e) {
-            setError(e instanceof ApiError ? e.message : "Something went wrong");
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 280 }}>
-            <div style={{ color: "#888" }}>
-                Sign in to leave feedback (candidates can browse existing feedback once signed in too).
-            </div>
-            {mode === "signup" && (
-                <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-            )}
-            <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <input
-                placeholder="Password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-            />
-            <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={submit} disabled={busy || !email || !password}>
-                    {mode === "login" ? "Log in" : "Sign up"}
-                </button>
-                <button onClick={() => setMode(mode === "login" ? "signup" : "login")}>
-                    {mode === "login" ? "Need an account?" : "Have an account?"}
-                </button>
-            </div>
-            {error && <div style={{ color: "#f48771" }}>{error}</div>}
-        </div>
-    );
-}
 
 function SignedInPanel({
                            roomCode,

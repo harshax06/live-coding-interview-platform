@@ -48,7 +48,10 @@ const SORTERS: Record<SortKey, (a: PastSession, b: PastSession) => number> = {
  * actually populates.
  */
 function Dashboard() {
-    const { token, user, login, signup, logout } = useAuth();
+    // ProtectedRoute (role="INTERVIEWER") already guarantees an authenticated
+    // interviewer before this renders - no inline login form needed here anymore.
+    const { token, user, logout } = useAuth();
+    if (!token || !user) return null;
     const [sessions, setSessions] = useState<PastSession[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -96,9 +99,7 @@ function Dashboard() {
                 )}
             </div>
 
-            {!token || !user ? (
-                <AuthGate onLogin={login} onSignup={signup} />
-            ) : user.role !== "INTERVIEWER" ? (
+            {user.role !== "INTERVIEWER" ? (
                 <div style={{ color: "#f9a825" }}>Only interviewer accounts have a dashboard.</div>
             ) : (
                 <>
@@ -224,57 +225,5 @@ function SessionCard({ session }: { session: PastSession }) {
     );
 }
 
-function AuthGate({
-                      onLogin,
-                      onSignup,
-                  }: {
-    onLogin: (email: string, password: string) => Promise<void>;
-    onSignup: (email: string, password: string, name: string) => Promise<void>;
-}) {
-    const [mode, setMode] = useState<"login" | "signup">("login");
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [name, setName] = useState("");
-    const [error, setError] = useState<string | null>(null);
-    const [busy, setBusy] = useState(false);
-
-    const submit = async () => {
-        setError(null);
-        setBusy(true);
-        try {
-            if (mode === "login") await onLogin(email, password);
-            else await onSignup(email, password, name);
-        } catch (e) {
-            setError(e instanceof ApiError ? e.message : "Something went wrong");
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 280 }}>
-            <div style={{ color: "#888" }}>Sign in to see your dashboard.</div>
-            {mode === "signup" && (
-                <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-            )}
-            <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <input
-                placeholder="Password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-            />
-            <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={submit} disabled={busy || !email || !password}>
-                    {mode === "login" ? "Log in" : "Sign up"}
-                </button>
-                <button onClick={() => setMode(mode === "login" ? "signup" : "login")}>
-                    {mode === "login" ? "Need an account?" : "Have an account?"}
-                </button>
-            </div>
-            {error && <div style={{ color: "#f48771" }}>{error}</div>}
-        </div>
-    );
-}
 
 export default Dashboard;

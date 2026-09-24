@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import { login as apiLogin, signup as apiSignup } from "../lib/api";
 
 export interface AuthUser {
@@ -21,14 +21,25 @@ function decodeUser(token: string): AuthUser | null {
     }
 }
 
+interface AuthContextValue {
+    token: string | null;
+    user: AuthUser | null;
+    login: (email: string, password: string) => Promise<void>;
+    signup: (email: string, password: string, name: string, role: "INTERVIEWER" | "CANDIDATE") => Promise<void>;
+    logout: () => void;
+}
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
 /**
- * Minimal token-in-localStorage auth, scoped to what the feedback feature needs. The rest
- * of the app (presence, edits, runs) still identifies people by an ad hoc STOMP userId
- * string with no real login - this doesn't touch that. There's no dedicated login screen
- * anywhere else in the app yet (not on the roadmap so far), so FeedbackPanel embeds a
- * compact login/signup form directly rather than this being a stopgap for a broader auth UI.
+ * Token-in-localStorage auth, shared app-wide via Context (was a plain per-component hook
+ * through Day 39 - fine when only FeedbackPanel used it, but Login/Signup/Dashboard/Nav all
+ * needing the SAME reactive auth state is exactly what a shared hook re-reading localStorage
+ * independently per component can't guarantee without this). Still scoped to what the app
+ * actually needs: no refresh tokens, no session expiry handling beyond what the backend's
+ * JWT itself enforces server-side on every request.
  */
-export function useAuth() {
+export function AuthProvider({ children }: { children: ReactNode }) {
     const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
     const [user, setUser] = useState<AuthUser | null>(() => {
         const existing = localStorage.getItem(STORAGE_KEY);
@@ -46,8 +57,8 @@ export function useAuth() {
         applyToken(t);
     }, [applyToken]);
 
-    const signup = useCallback(async (email: string, password: string, name: string) => {
-        const { token: t } = await apiSignup(email, password, name);
+    const signup = useCallback(async (email: string, password: string, name: string, role: "INTERVIEWER" | "CANDIDATE") => {
+        const { token: t } = await apiSignup(email, password, name, role);
         applyToken(t);
     }, [applyToken]);
 
@@ -57,5 +68,15 @@ export function useAuth() {
         setUser(null);
     }, []);
 
-    return { token, user, login, signup, logout };
+    return (
+        <AuthContext.Provider value={{ token, user, login, signup, logout }}>
+    {children}
+    </AuthContext.Provider>
+);
+}
+
+export function useAuth(): AuthContextValue {
+    const ctx = useContext(AuthContext);
+    if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
+    return ctx;
 }

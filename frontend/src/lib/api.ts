@@ -28,8 +28,26 @@ export function login(email: string, password: string) {
     return request<{ token: string }>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
 }
 
-export function signup(email: string, password: string, name: string) {
-    return request<{ token: string }>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password, name }) });
+export function signup(email: string, password: string, name: string, role: "INTERVIEWER" | "CANDIDATE") {
+    return request<{ token: string }>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password, name, role }) });
+}
+
+export interface RoomInfo {
+    joinCode: string;
+    createdByName: string;
+    createdAt: string;
+}
+
+export function createRoom(token: string) {
+    return request<RoomInfo>("/api/rooms", { method: "POST" }, token);
+}
+
+export function resolveRoom(token: string, joinCode: string) {
+    return request<RoomInfo>(`/api/rooms/${encodeURIComponent(joinCode)}`, { method: "GET" }, token);
+}
+
+export function listMyRooms(token: string) {
+    return request<RoomInfo[]>("/api/rooms/mine", { method: "GET" }, token);
 }
 
 export type FeedbackKind = "OVERALL" | "MOMENT";
