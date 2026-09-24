@@ -57,4 +57,12 @@ public interface SessionEventRecordRepository extends JpaRepository<SessionEvent
             LIMIT 50
             """, nativeQuery = true)
     List<Object[]> findRecordingRows(@Param("roomCode") String roomCode);
+
+    // Day 39 dashboard: how long a specific recording ran and how many events it has
+    @Query(value = """
+            SELECT MIN(event_timestamp), MAX(event_timestamp), COUNT(*)
+            FROM session_events
+            WHERE session_key = :recordingId
+            """, nativeQuery = true)
+    Object[] findTiming(@Param("recordingId") String recordingId);
 }

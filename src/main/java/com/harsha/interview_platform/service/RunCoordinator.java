@@ -1,49 +1,47 @@
 package com.harsha.interview_platform.service;
 
+import com.harsha.interview_platform.config.RedisBroadcaster;
 import com.harsha.interview_platform.dto.request.ExecutionResult;
 import com.harsha.interview_platform.dto.request.RunRequest;
 import com.harsha.interview_platform.dto.response.RunEvent;
 import com.harsha.interview_platform.event.RecordingIds;
 import com.harsha.interview_platform.event.SessionEventProducer;
 import com.harsha.interview_platform.event.SessionEventType;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
 
 /**
  * Owns the run lifecycle for a room:
- *  - one run at a time per room
- *  - at most MAX_CONCURRENT_RUNS sandboxes across the whole server
- *  - execution happens off the STOMP thread, results are broadcast to the whole room
+ *  - one run at a time per room, and at most 4 sandboxes across the WHOLE FLEET, enforced via
+ *    Redis (RunSlotService) so the limits hold with any number of backend instances
+ *  - execution happens off the STOMP thread, results are broadcast to the whole room via Redis
+ *    pub/sub (RedisBroadcaster), so a client on any instance receives them
  *  - accepted runs and their results are appended to the session event log (Kafka)
  */
 @Service
 public class RunCoordinator {
 
-    private static final int MAX_CONCURRENT_RUNS = 4;
     private static final int MAX_CODE_CHARS = 50_000;
 
     private final CodeExecutionService executionService;
-    private final SimpMessagingTemplate messagingTemplate;
+    private final RedisBroadcaster broadcaster;
     private final SessionEventProducer eventProducer;
+    private final RunSlotService slotService;
 
-    private final Set<String> runningRooms = ConcurrentHashMap.newKeySet();
-    private final Semaphore capacity = new Semaphore(MAX_CONCURRENT_RUNS);
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
     public RunCoordinator(CodeExecutionService executionService,
-                          SimpMessagingTemplate messagingTemplate,
-                          SessionEventProducer eventProducer) {
+                          RedisBroadcaster broadcaster,
+                          SessionEventProducer eventProducer,
+                          RunSlotService slotService) {
         this.executionService = executionService;
-        this.messagingTemplate = messagingTemplate;
+        this.broadcaster = broadcaster;
         this.eventProducer = eventProducer;
+        this.slotService = slotService;
     }
 
     public void submit(String roomCode, RunRequest request) {
@@ -59,12 +57,14 @@ public class RunCoordinator {
             send(roomCode, RunEvent.rejected(user, "Code is too large to run."));
             return;
         }
-        if (!runningRooms.add(roomCode)) {
+
+        String lockToken = slotService.tryAcquireRoomLock(roomCode);
+        if (lockToken == null) {
             send(roomCode, RunEvent.rejected(user, "A run is already in progress in this room."));
             return;
         }
-        if (!capacity.tryAcquire()) {
-            runningRooms.remove(roomCode);
+        if (!slotService.tryAcquireCapacity()) {
+            slotService.releaseRoomLock(roomCode, lockToken);
             send(roomCode, RunEvent.rejected(user, "Server is busy, try again in a moment."));
             return;
         }
@@ -89,8 +89,8 @@ public class RunCoordinator {
                 send(roomCode, RunEvent.done(user, request.getLanguage(), "", err, -1, false));
                 publishCompleted(roomCode, recordingId, user, request.getLanguage(), "", err, -1, false);
             } finally {
-                capacity.release();
-                runningRooms.remove(roomCode);
+                slotService.releaseCapacity();
+                slotService.releaseRoomLock(roomCode, lockToken);
             }
         });
     }
@@ -107,6 +107,6 @@ public class RunCoordinator {
     }
 
     private void send(String roomCode, RunEvent event) {
-        messagingTemplate.convertAndSend("/topic/run/" + roomCode, event);
+        broadcaster.publish("/topic/run/" + roomCode, event);
     }
 }

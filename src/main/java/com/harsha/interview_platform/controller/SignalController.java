@@ -1,30 +1,27 @@
 package com.harsha.interview_platform.controller;
 
+import com.harsha.interview_platform.config.RedisBroadcaster;
 import com.harsha.interview_platform.dto.request.SignalRequest;
 import com.harsha.interview_platform.dto.response.SignalMessage;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Controller;
 
 /**
- * Pure relay for WebRTC signaling: the server never looks at SDP or ICE candidate content,
- * it only stamps who sent a message and rebroadcasts it to the room's topic.
- *
- * Every client in a room subscribes to ONE topic, /topic/signal/{roomCode}, and filters
- * messages client-side by toUserId - simpler than per-user queues, and fine at interview-room
- * scale (a handful of participants). offer/answer/ice-candidate are always addressed to one
- * peer (toUserId required); presence-driven "who do I call" is handled on the frontend (Day 28).
+ * Pure relay for WebRTC signaling, now cluster-wide via Redis pub/sub (RedisBroadcaster):
+ * the two peers in a call can each be connected to a different backend instance, since
+ * sticky sessions only guarantee one client always reaches the SAME instance, not that two
+ * different clients reach the same instance as each other.
  */
 @Controller
 public class SignalController {
 
     private static final int MAX_PAYLOAD_CHARS = 20_000; // generous for SDP; guards against abuse
 
-    private final SimpMessagingTemplate messagingTemplate;
+    private final RedisBroadcaster broadcaster;
 
-    public SignalController(SimpMessagingTemplate messagingTemplate) {
-        this.messagingTemplate = messagingTemplate;
+    public SignalController(RedisBroadcaster broadcaster) {
+        this.broadcaster = broadcaster;
     }
 
     @MessageMapping("/signal/{roomCode}")
@@ -34,7 +31,7 @@ public class SignalController {
         SignalMessage message = new SignalMessage(
                 request.getType(), request.getFromUserId(), request.getToUserId(), request.getPayload());
 
-        messagingTemplate.convertAndSend("/topic/signal/" + roomCode, message);
+        broadcaster.publish("/topic/signal/" + roomCode, message);
     }
 
     private boolean isValid(SignalRequest r) {

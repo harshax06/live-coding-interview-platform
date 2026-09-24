@@ -1,0 +1,12 @@
+{
+  "name": "interview-platform-loadtest",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node ws-load-test.mjs"
+  },
+  "dependencies": {
+    "@stomp/stompjs": "^7.3.0",
+    "ws": "^8.18.0"
+  }
+}

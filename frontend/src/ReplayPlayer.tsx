@@ -16,6 +16,8 @@ type ReplayMessage = {
     realDurationMs?: number;
     gaps?: { positionMs: number; skippedMs: number }[];
     recordings?: Recording[];
+    comments?: { id: number; authorName: string; comment: string; playOffsetMs: number }[];
+    overallFeedback?: { authorName: string; rating: number | null; comment: string | null }[];
     payload: string | null;
     instant: boolean;
     message: string | null;
@@ -60,7 +62,14 @@ function formatTime(ms: number): string {
  * EDIT events are Yjs updates applied to a fresh Y.Doc (text + selected language),
  * RUN_* events feed the output panel. Seeking = server sends RESET + a burst of events.
  */
-function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
+function ReplayPlayer({
+                          roomCode: initialRoom,
+                          initialRecordingId,
+                      }: {
+    roomCode: string;
+    /** Deep-link a specific recording (e.g. from the Day 39 dashboard) instead of defaulting to "latest". */
+    initialRecordingId?: string;
+}) {
     const { client, connected } = useStompClient();
     const [replayId] = useState(() => "replay-" + Math.random().toString(36).slice(2, 10));
 
@@ -75,11 +84,13 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
     const [runOutput, setRunOutput] = useState<RunOutput | null>(null);
     const [runningBy, setRunningBy] = useState<string | null>(null);
     const [recordings, setRecordings] = useState<Recording[]>([]);
-    const [selectedRecording, setSelectedRecording] = useState("");   // "" = the room's latest
+    const [selectedRecording, setSelectedRecording] = useState(initialRecordingId ?? "");   // "" = the room's latest
     const [skipIdle, setSkipIdle] = useState(true);
     const [realDurationMs, setRealDurationMs] = useState(0);
     const [originalMs, setOriginalMs] = useState(0);
     const [gaps, setGaps] = useState<{ positionMs: number; skippedMs: number }[]>([]);
+    const [comments, setComments] = useState<{ id: number; authorName: string; comment: string; playOffsetMs: number }[]>([]);
+    const [overallFeedback, setOverallFeedback] = useState<{ authorName: string; rating: number | null; comment: string | null }[]>([]);
 
     const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
     const monacoRef = useRef<Parameters<OnMount>[1] | null>(null);
@@ -165,6 +176,8 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
                 setPositionMs(0);
                 setRealDurationMs(m.realDurationMs ?? 0);
                 setGaps(m.gaps ?? []);
+                setComments(m.comments ?? []);
+                setOverallFeedback(m.overallFeedback ?? []);
                 setOriginalMs(0);
                 firstTimestampRef.current = null;
                 setStatus("playing");
@@ -381,7 +394,7 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
                     <div style={{ position: "relative", height: 8 }}>
                         {durationMs > 0 && gaps.map((g, i) => (
                             <div
-                                key={i}
+                                key={`gap-${i}`}
                                 title={`${formatTime(g.skippedMs)} of idle time skipped here`}
                                 style={{
                                     position: "absolute",
@@ -393,6 +406,29 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
                                     background: "#f9a825",
                                     borderRadius: 1,
                                     cursor: "help",
+                                }}
+                            />
+                        ))}
+                        {durationMs > 0 && comments.map((c) => (
+                            <div
+                                key={`comment-${c.id}`}
+                                title={`${c.authorName}: ${c.comment}`}
+                                onClick={() => {
+                                    scrubbingRef.current = true;
+                                    setPositionMs(c.playOffsetMs);
+                                    send("seek", { positionMs: c.playOffsetMs });
+                                    scrubbingRef.current = false;
+                                }}
+                                style={{
+                                    position: "absolute",
+                                    left: `${(c.playOffsetMs / durationMs) * 100}%`,
+                                    top: 0,
+                                    width: 6,
+                                    height: 8,
+                                    marginLeft: -3,
+                                    background: "#4fc3f7",
+                                    borderRadius: "50%",
+                                    cursor: "pointer",
                                 }}
                             />
                         ))}
@@ -420,6 +456,20 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
                 <div style={{ color: "#888", padding: "0 8px 6px", fontSize: 12 }}>
                     Original session time: {formatTime(originalMs)} / {formatTime(realDurationMs)}
                     {gaps.length > 0 && ` - ${gaps.length} idle gap${gaps.length > 1 ? "s" : ""} shortened (orange marks)`}
+                    {comments.length > 0 && ` - ${comments.length} comment${comments.length > 1 ? "s" : ""} (blue marks)`}
+                </div>
+            )}
+
+            {overallFeedback.length > 0 && (
+                <div style={{ padding: "0 8px 6px", display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    {overallFeedback.map((f, i) => (
+                        <div key={i} style={{ fontSize: 12, background: "#252525", padding: "4px 8px", borderRadius: 4 }}>
+                            <span style={{ color: "#f9a825" }}>{"\u2605".repeat(f.rating ?? 0)}</span>
+                            <span style={{ color: "#555" }}>{"\u2605".repeat(5 - (f.rating ?? 0))}</span>
+                            <span style={{ color: "#888", marginLeft: 6 }}>{f.authorName}</span>
+                            {f.comment && <div style={{ marginTop: 2 }}>{f.comment}</div>}
+                        </div>
+                    ))}
                 </div>
             )}
 
@@ -448,6 +498,30 @@ function ReplayPlayer({ roomCode: initialRoom }: { roomCode: string }) {
                 {runningBy && <div>{runningBy} is running the code...</div>}
                 {!runningBy && !runOutput && (
                     <div style={{ color: "#888" }}>Output from runs during the session appears here.</div>
+                )}
+                {comments.length > 0 && (
+                    <div style={{ marginBottom: 8 }}>
+                        <div style={{ color: "#888", marginBottom: 2 }}>Comments</div>
+                        {comments.map((c) => (
+                            <div
+                                key={c.id}
+                                onClick={() => send("seek", { positionMs: c.playOffsetMs })}
+                                style={{
+                                    display: "flex",
+                                    gap: 8,
+                                    padding: "2px 0",
+                                    cursor: "pointer",
+                                    opacity: positionMs >= c.playOffsetMs ? 1 : 0.5,
+                                }}
+                            >
+                                <span style={{ color: "#4fc3f7", fontFamily: "monospace", flexShrink: 0 }}>
+                                    {formatTime(c.playOffsetMs)}
+                                </span>
+                                <span style={{ color: "#888", flexShrink: 0 }}>{c.authorName}:</span>
+                                <span>{c.comment}</span>
+                            </div>
+                        ))}
+                    </div>
                 )}
                 {runOutput && (
                     <>

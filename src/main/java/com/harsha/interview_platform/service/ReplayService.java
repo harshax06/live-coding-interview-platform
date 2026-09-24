@@ -1,9 +1,12 @@
 package com.harsha.interview_platform.service;
 
 import com.harsha.interview_platform.dto.response.ReplayMessage;
+import com.harsha.interview_platform.entity.Feedback;
+import com.harsha.interview_platform.entity.FeedbackKind;
 import com.harsha.interview_platform.entity.SessionEventRecord;
+import com.harsha.interview_platform.repository.FeedbackRepository;
 import com.harsha.interview_platform.repository.SessionEventRecordRepository;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
+import com.harsha.interview_platform.config.RedisBroadcaster;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -23,6 +26,17 @@ import java.util.concurrent.TimeUnit;
  * capped at maxGapMs). Event i is due at  base + offset[i] / speed  where base is fixed when
  * playing (re)starts - so delays never accumulate drift the way "sleep(gap)" chains do.
  */
+/**
+ * KNOWN LIMITATION (see Day 31/32 notes): the broadcast below is now cluster-wide via Redis,
+ * so a client on any instance receives replay events for a replayId started on another
+ * instance. The PLAYBACK STATE itself (the `sessions` map, its ScheduledFutures) still lives
+ * only on the instance that ran `start`. A start/pause/seek/stop/speed command that lands on a
+ * DIFFERENT instance (sticky sessions usually prevent this for one client, but nothing pins
+ * "commands for replay X" to "the instance that started X") would silently no-op there.
+ * Fixing this fully means either storing playback position in Redis and having any instance
+ * able to pick up ticking it, or routing all commands for a replayId to one owning instance
+ * (e.g. consistent hashing) - a bigger change than this week's Kafka/Redis work.
+ */
 @Service
 public class ReplayService {
 
@@ -32,14 +46,17 @@ public class ReplayService {
     private static final long IDLE_EXPIRY_MS = 10 * 60_000L;
 
     private final SessionEventRecordRepository repository;
-    private final SimpMessagingTemplate messagingTemplate;
+    private final FeedbackRepository feedbackRepository;
+    private final RedisBroadcaster broadcaster;
 
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
     private final Map<String, ReplaySession> sessions = new ConcurrentHashMap<>();
 
-    public ReplayService(SessionEventRecordRepository repository, SimpMessagingTemplate messagingTemplate) {
+    public ReplayService(SessionEventRecordRepository repository, RedisBroadcaster broadcaster,
+                         FeedbackRepository feedbackRepository) {
         this.repository = repository;
-        this.messagingTemplate = messagingTemplate;
+        this.broadcaster = broadcaster;
+        this.feedbackRepository = feedbackRepository;
         scheduler.scheduleAtFixedRate(this::sweepIdle, 1, 1, TimeUnit.MINUTES);
     }
 
@@ -68,7 +85,9 @@ public class ReplayService {
         double s = speed == null ? 1.0 : Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed));
         long gap = maxGapMs == null ? DEFAULT_MAX_GAP_MS : (maxGapMs <= 0 ? Long.MAX_VALUE : maxGapMs);
 
-        ReplaySession session = new ReplaySession(replayId, events, s, gap);
+        List<Feedback> feedback = feedbackRepository.findForRoom(roomCode.trim(), sessionKey);
+
+        ReplaySession session = new ReplaySession(replayId, events, s, gap, feedback);
         sessions.put(replayId, session);
         session.begin();
     }
@@ -127,7 +146,7 @@ public class ReplayService {
     }
 
     private void send(String replayId, ReplayMessage message) {
-        messagingTemplate.convertAndSend("/topic/replay/" + replayId, message);
+        broadcaster.publish("/topic/replay/" + replayId, message);
     }
 
     /** State of one running replay. All methods synchronize on the instance. */
@@ -140,6 +159,8 @@ public class ReplayService {
         private final long durationMs;
         private final long realDurationMs;                  // length of the original session
         private final List<ReplayMessage.Gap> gaps;         // idle stretches that were shortened
+        private final List<ReplayMessage.Comment> comments;             // MOMENT feedback, mapped onto this timeline
+        private final List<ReplayMessage.OverallFeedback> overallFeedback;
         private double speed;              // changeable while playing (see changeSpeed)
 
         private boolean playing = false;
@@ -151,15 +172,22 @@ public class ReplayService {
         private ScheduledFuture<?> pending;
         private long lastTouchedMs = System.currentTimeMillis();
 
-        ReplaySession(String replayId, List<SessionEventRecord> events, double speed, long maxGapMs) {
+        // Uncompressed cumulative elapsed time per event, parallel to playOffsetMs (compressed).
+        // Needed to place a feedback comment's real-time position onto the compressed timeline.
+        private final long[] rawElapsedMs;
+
+        ReplaySession(String replayId, List<SessionEventRecord> events, double speed, long maxGapMs,
+                      List<Feedback> feedback) {
             this.replayId = replayId;
             this.events = events;
             this.total = events.size();
             this.speed = speed;
 
             this.playOffsetMs = new long[total];
+            this.rawElapsedMs = new long[total];
             List<ReplayMessage.Gap> shortened = new ArrayList<>();
             long offset = 0;
+            long firstEventTimestamp = events.get(0).getEventTimestamp();
             for (int i = 1; i < total; i++) {
                 long gap = Math.max(0, events.get(i).getEventTimestamp() - events.get(i - 1).getEventTimestamp());
                 if (gap > maxGapMs) {
@@ -168,15 +196,51 @@ public class ReplayService {
                 }
                 offset += Math.min(gap, maxGapMs);
                 playOffsetMs[i] = offset;
+                rawElapsedMs[i] = events.get(i).getEventTimestamp() - firstEventTimestamp;
             }
             this.durationMs = playOffsetMs[total - 1];
             this.gaps = List.copyOf(shortened);
             this.realDurationMs = Math.max(0,
                     events.get(total - 1).getEventTimestamp() - events.get(0).getEventTimestamp());
+
+            this.comments = feedback.stream()
+                    .filter(f -> f.getKind() == FeedbackKind.MOMENT && f.getTimestampMs() != null)
+                    .map(f -> new ReplayMessage.Comment(
+                            f.getId(), f.getAuthor().getName(), f.getComment(),
+                            mapToCompressedTimeline(f.getTimestampMs(), maxGapMs)))
+                    .sorted((a, b) -> Long.compare(a.playOffsetMs(), b.playOffsetMs()))
+                    .toList();
+            this.overallFeedback = feedback.stream()
+                    .filter(f -> f.getKind() == FeedbackKind.OVERALL)
+                    .map(f -> new ReplayMessage.OverallFeedback(f.getAuthor().getName(), f.getRating(), f.getComment()))
+                    .toList();
+        }
+
+        /**
+         * Maps a feedback comment's real-elapsed-time position onto this timeline's compression.
+         * NOTE: Feedback.timestampMs is measured client-side from when that tab's document synced
+         * (see FeedbackPanel's recordingJoinedAt caveat, Day 37), which approximates but does not
+         * exactly equal this recording's first event time - for someone who left a comment after
+         * joining a session already in progress, this placement can drift from where they actually
+         * meant it. What this DOES guarantee precisely: comments falling within a normal-paced
+         * stretch land exactly where they timestamped; comments falling inside a long real pause
+         * that got compressed land right where that compressed pause resolves on the timeline,
+         * rather than stranded deep inside time that no longer exists on the replay.
+         */
+        private long mapToCompressedTimeline(long targetRawElapsedMs, long maxGapMs) {
+            long clamped = Math.min(Math.max(targetRawElapsedMs, 0), rawElapsedMs[total - 1]);
+            for (int i = 0; i < total - 1; i++) {
+                if (clamped >= rawElapsedMs[i] && clamped <= rawElapsedMs[i + 1]) {
+                    long intoSpan = clamped - rawElapsedMs[i];
+                    long compressedIntoSpan = Math.min(intoSpan, maxGapMs);
+                    return playOffsetMs[i] + compressedIntoSpan;
+                }
+            }
+            return durationMs;
         }
 
         synchronized void begin() {
-            send(replayId, ReplayMessage.started(replayId, total, durationMs, realDurationMs, gaps));
+            send(replayId, ReplayMessage.started(replayId, total, durationMs, realDurationMs, gaps, comments, overallFeedback));
             play();
         }
 

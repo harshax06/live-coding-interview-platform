@@ -13,16 +13,23 @@ public class RedisConfig {
     @Bean
     public RedisMessageListenerContainer redisMessageListenerContainer(
             RedisConnectionFactory connectionFactory,
-            MessageListenerAdapter presenceListenerAdapter) {
+            MessageListenerAdapter presenceListenerAdapter,
+            MessageListenerAdapter broadcastListenerAdapter) {
 
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
         container.addMessageListener(presenceListenerAdapter, new ChannelTopic("presence-events"));
+        container.addMessageListener(broadcastListenerAdapter, new ChannelTopic(RedisBroadcaster.channel()));
         return container;
     }
 
     @Bean
     public MessageListenerAdapter presenceListenerAdapter(PresenceRedisListener listener) {
+        return new MessageListenerAdapter(listener, "handleMessage");
+    }
+
+    @Bean
+    public MessageListenerAdapter broadcastListenerAdapter(BroadcastRedisListener listener) {
         return new MessageListenerAdapter(listener, "handleMessage");
     }
 }
